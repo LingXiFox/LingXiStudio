@@ -12,6 +12,10 @@ First run (M5 Air 32 GB, 1024×1024, 40 steps, seed 42): 403 s total, of which d
 start, ~9.5 s/step once the fanless chassis throttles), VAE decode 10 s, loading all weights ~4.5 s.
 Peak MLX memory 14.3 GB, no swap growth during the run.
 
+Performance alignment (see [docs/performance-alignment.md](docs/performance-alignment.md)): with a compiled denoising
+step and a fused Q/K RMSNorm + RoPE Metal kernel, steady-state denoising runs at 5.60 s/step against MFLUX's
+6.05 s/step on the same machine and configuration (108%), at a 17.8 GB peak process footprint.
+
 ## Layout
 
 | Path | Purpose |
@@ -23,7 +27,11 @@ Peak MLX memory 14.3 GB, no swap growth during the run.
 | `Sources/QwenImageCore/Scheduler.swift` | Flow-match Euler schedule (exponential shift + terminal stretch) |
 | `Sources/QwenImageCore/Pipeline.swift` | Staged pipeline: only one large component is resident at a time |
 | `Sources/QwenImageCore/ImageWriter.swift` | RGBA PNG + JSON sidecar with the full generation record |
+| `Sources/QwenImageCore/FusedKernels.swift` | Fused Q/K RMSNorm + RoPE Metal kernel |
+| `Sources/QwenImageCore/LoRA.swift` | PEFT LoRA baking (fp32 merge, single rounding) |
+| `Sources/QwenImageCore/ProcessMemory.swift` | Process footprint sampling per stage |
 | `Sources/qwen-image/main.swift` | CLI (`generate`, `validate`, numeric `debug-*` dumps) |
+| `Scripts/benchmark.sh` | Same-config benchmark against MFLUX with thermal cooldown |
 
 ## Build and run
 
@@ -36,6 +44,7 @@ swift build -c release
 ```
 
 Defaults: model `~/Models/Qwen-Image-2.1-BF16`, 1024×1024, 40 steps, true CFG off (the model is sampled without guidance).
+Turbo: `--lora <file>:1.0 --scheduler viggle_turbo --steps 6`.
 Results go to `outputs/` with a `.json` sidecar (prompt, seed, size, steps, scheduler, timings, peak memory).
 
 ## Memory strategy (32 GB unified memory)

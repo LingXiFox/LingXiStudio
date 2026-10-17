@@ -45,7 +45,24 @@ final class QwenImageTransformer: ParameterContainer {
         let sin: MLXArray
     }
 
+    /// Execution switches; every combination computes the same function (used for A/B measurements).
+    struct Options {
+        /// Single Metal kernel for Q/K RMSNorm + RoPE instead of composed ops.
+        var fusedQKNormRope = true
+        /// Trace each denoising step once with `compile` so element-wise ops are fused.
+        var compiledStep = true
+
+        static func fromEnvironment() -> Options {
+            let env = ProcessInfo.processInfo.environment
+            var options = Options()
+            if env["LINGXI_FUSED_QK"] == "0" { options.fusedQKNormRope = false }
+            if env["LINGXI_COMPILE"] == "0" { options.compiledStep = false }
+            return options
+        }
+    }
+
     let config: Config
+    let options: Options
     let imgIn: Linear
     let txtNorm: MLXArray
     let txtIn: Linear
@@ -66,8 +83,9 @@ final class QwenImageTransformer: ParameterContainer {
             }
     }
 
-    init(store: WeightStore, config: Config = Config()) throws {
+    init(store: WeightStore, config: Config = Config(), options: Options = .fromEnvironment()) throws {
         self.config = config
+        self.options = options
         let d = config.dim
         let mlp = d * config.mlpRatio
         imgIn = Linear(try store.get("img_in.weight", shape: [d, config.inChannels]))
@@ -172,6 +190,11 @@ final class QwenImageTransformer: ParameterContainer {
         var q = block.q(x).reshaped(1, length, c.heads, c.headDim)
         var k = block.k(x).reshaped(1, length, c.heads, c.headDim)
         let v = block.v(x).reshaped(1, length, c.heads, c.headDim).transposed(0, 2, 1, 3)
+        if options.fusedQKNormRope {
+            (q, k) = FusedKernels.qkNormRope(
+                q: q, k: k, weightQ: block.normQ, weightK: block.normK, cos: rope.cos, sin: rope.sin, eps: c.eps)
+            return (q.transposed(0, 2, 1, 3), k.transposed(0, 2, 1, 3), v)
+        }
         q = applyRope(MLXFast.rmsNorm(q, weight: block.normQ, eps: c.eps), rope).transposed(0, 2, 1, 3)
         k = applyRope(MLXFast.rmsNorm(k, weight: block.normK, eps: c.eps), rope).transposed(0, 2, 1, 3)
         return (q, k, v)
@@ -227,8 +250,26 @@ final class QwenImageTransformer: ParameterContainer {
 
     /// Predicts the flow velocity for the packed target latents `[1, N, 64]`.
     func callAsFunction(latents: MLXArray, sigma: Float, cache: TextCache, rope: Rope) -> MLXArray {
+        let inputs = [latents, timeEmbedding(sigma: sigma), rope.cos, rope.sin] + cache.keys + cache.values
+        guard options.compiledStep else { return imageStep(inputs)[0] }
+        if compiledImageStep == nil {
+            // `compile` retraces by itself when input shapes change (resolution or prompt length).
+            compiledImageStep = compile { [unowned self] in self.imageStep($0) }
+        }
+        return compiledImageStep!(inputs)[0]
+    }
+
+    private var compiledImageStep: (([MLXArray]) -> [MLXArray])?
+
+    /// One denoising evaluation of the image tokens against the cached text prefix.
+    /// Inputs: `[latents, temb, ropeCos, ropeSin, keys..., values...]`.
+    private func imageStep(_ inputs: [MLXArray]) -> [MLXArray] {
+        let latents = inputs[0]
+        let temb = inputs[1]
+        let rope = Rope(cos: inputs[2], sin: inputs[3])
+        let keys = inputs[4..<(4 + blocks.count)]
+        let values = inputs[(4 + blocks.count)...]
         let length = latents.dim(1)
-        let temb = timeEmbedding(sigma: sigma)
         let mod = modulationRow(modulation(silu(temb)), row: 0)
         let scale = 1 / Float(config.headDim).squareRoot()
         var hidden = imgIn(latents)
@@ -236,13 +277,13 @@ final class QwenImageTransformer: ParameterContainer {
             let (q, k, v) = project(block, layerNorm(hidden) * (1 + mod.scale1), rope)
             let attention = MLXFast.scaledDotProductAttention(
                 queries: q,
-                keys: concatenated([cache.keys[index], k], axis: 2),
-                values: concatenated([cache.values[index], v], axis: 2),
+                keys: concatenated([keys[keys.startIndex + index], k], axis: 2),
+                values: concatenated([values[values.startIndex + index], v], axis: 2),
                 scale: scale, mask: .none)
             hidden = hidden + mod.gate1 * block.out(merge(attention, length: length))
             hidden = hidden + mod.gate2 * feedForward(block, layerNorm(hidden) * (1 + mod.scale2))
         }
         let outScale = normOut(silu(temb))[0]
-        return projOut(layerNorm(hidden) * (1 + outScale))
+        return [projOut(layerNorm(hidden) * (1 + outScale))]
     }
 }

@@ -10,10 +10,12 @@ public struct GenerationRequest: Codable, Sendable {
     /// True classifier-free guidance; only active when `> 1` and a negative prompt is given.
     public var trueCFGScale: Float
     public var seed: UInt64
+    public var scheduler: SamplerSchedule
+    public var loras: [LoRASpec]
 
     public init(
         prompt: String, negativePrompt: String? = nil, width: Int = 1024, height: Int = 1024, steps: Int = 40,
-        trueCFGScale: Float = 1.0, seed: UInt64
+        trueCFGScale: Float = 1.0, seed: UInt64, scheduler: SamplerSchedule = .linear, loras: [LoRASpec] = []
     ) {
         self.prompt = prompt
         self.negativePrompt = negativePrompt
@@ -22,11 +24,20 @@ public struct GenerationRequest: Codable, Sendable {
         self.steps = steps
         self.trueCFGScale = trueCFGScale
         self.seed = seed
+        self.scheduler = scheduler
+        self.loras = loras
     }
 
     public var usesTrueCFG: Bool {
         trueCFGScale > 1 && !(negativePrompt ?? "").isEmpty
     }
+}
+
+public enum SamplerSchedule: String, Codable, Sendable {
+    /// Default 40-step grid with the terminal stretch.
+    case linear
+    /// Fixed 6-node schedule of the Viggle turbo LoRA, without the terminal stretch.
+    case viggleTurbo = "viggle_turbo"
 }
 
 public enum GenerationStage: String, Codable, Sendable {
@@ -38,9 +49,13 @@ public struct MemoryStats: Codable, Sendable {
     public var activeBytes: Int
     public var cacheBytes: Int
     public var peakBytes: Int
+    /// Process `phys_footprint`, including memory MLX does not account for.
+    public var footprintBytes: Int
 
     static func current() -> MemoryStats {
-        MemoryStats(activeBytes: Memory.activeMemory, cacheBytes: Memory.cacheMemory, peakBytes: Memory.peakMemory)
+        MemoryStats(
+            activeBytes: Memory.activeMemory, cacheBytes: Memory.cacheMemory, peakBytes: Memory.peakMemory,
+            footprintBytes: ProcessMemory.footprint())
     }
 }
 
@@ -58,6 +73,8 @@ public struct GenerationProgress: Sendable {
 public struct StageTiming: Codable, Sendable {
     public var stage: GenerationStage
     public var seconds: Double
+    /// Peak process footprint while the stage ran.
+    public var peakFootprintBytes: Int
 }
 
 public struct GeneratedImage: Sendable {
@@ -69,18 +86,22 @@ public struct GeneratedImage: Sendable {
     public var timings: [StageTiming]
     public var peakMemoryBytes: Int
     public var totalSeconds: Double
+    /// Wall time of every denoising step (transformer + Euler update, synchronized).
+    public var stepSeconds: [Double]
 }
 
 public enum PipelineError: Error, CustomStringConvertible {
     case invalidSize(Int, Int)
     case cancelled
     case emptyPrompt
+    case scheduleSteps(SamplerSchedule, Int)
 
     public var description: String {
         switch self {
         case .invalidSize(let w, let h): "Width and height must be positive multiples of 32 (got \(w)x\(h))"
         case .cancelled: "Generation cancelled"
         case .emptyPrompt: "Prompt is empty"
+        case .scheduleSteps(let schedule, let steps): "\(schedule.rawValue) needs exactly \(steps) steps"
         }
     }
 }
@@ -118,10 +139,17 @@ public final class QwenImagePipeline: @unchecked Sendable {
         guard request.width > 0, request.height > 0, request.width % 32 == 0, request.height % 32 == 0 else {
             throw PipelineError.invalidSize(request.width, request.height)
         }
+        if request.scheduler == .viggleTurbo, request.steps != FlowMatchSchedule.viggleTurboNodes.count {
+            throw PipelineError.scheduleSteps(.viggleTurbo, FlowMatchSchedule.viggleTurboNodes.count)
+        }
         let start = Date()
         var timings: [StageTiming] = []
         var stageStart = Date()
         Memory.peakMemory = 0
+        let sampler = FootprintSampler()
+        sampler.start()
+        defer { sampler.stop() }
+        _ = sampler.takePeak()
 
         func report(_ stage: GenerationStage, _ fraction: Double, step: Int = 0, secondsPerStep: Double? = nil) {
             progress(
@@ -131,7 +159,9 @@ public final class QwenImagePipeline: @unchecked Sendable {
                     memory: .current()))
         }
         func finish(_ stage: GenerationStage) {
-            timings.append(StageTiming(stage: stage, seconds: Date().timeIntervalSince(stageStart)))
+            timings.append(
+                StageTiming(
+                    stage: stage, seconds: Date().timeIntervalSince(stageStart), peakFootprintBytes: sampler.takePeak()))
             stageStart = Date()
         }
         func checkCancelled() throws {
@@ -169,11 +199,20 @@ public final class QwenImagePipeline: @unchecked Sendable {
         let latentHeight = request.height / 16
         let latentWidth = request.width / 16
         let imageTokens = latentHeight * latentWidth
-        let schedule = FlowMatchSchedule(steps: request.steps, imageSeqLen: imageTokens, config: scheduleConfig)
+        let schedule =
+            switch request.scheduler {
+            case .linear: FlowMatchSchedule(steps: request.steps, imageSeqLen: imageTokens, config: scheduleConfig)
+            case .viggleTurbo:
+                FlowMatchSchedule(
+                    nodes: FlowMatchSchedule.viggleTurboNodes, imageSeqLen: imageTokens, config: scheduleConfig,
+                    useTerminal: false)
+            }
+        var stepTimes: [Double] = []
         var latents = MLXRandom.normal([1, imageTokens, 64], key: MLXRandom.key(request.seed)).asType(.bfloat16)
         do {
-            let transformer = try QwenImageTransformer(
-                store: WeightStore(directory: model.transformer, component: "transformer"))
+            var store = try WeightStore(directory: model.transformer, component: "transformer")
+            try store.bake(request.loras)
+            let transformer = try QwenImageTransformer(store: store)
             transformer.materialize { report(.loadingTransformer, $0) }
             finish(.loadingTransformer)
             try checkCancelled()
@@ -190,7 +229,6 @@ public final class QwenImagePipeline: @unchecked Sendable {
             embeddings.removeAll()
             finish(.prefill)
 
-            var stepTimes: [Double] = []
             for step in 0..<schedule.steps {
                 try checkCancelled()
                 let stepStart = Date()
@@ -240,6 +278,6 @@ public final class QwenImagePipeline: @unchecked Sendable {
 
         return GeneratedImage(
             width: request.width, height: request.height, rgba: rgba, request: request, timings: timings,
-            peakMemoryBytes: Memory.peakMemory, totalSeconds: Date().timeIntervalSince(start))
+            peakMemoryBytes: Memory.peakMemory, totalSeconds: Date().timeIntervalSince(start), stepSeconds: stepTimes)
     }
 }

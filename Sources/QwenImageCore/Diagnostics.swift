@@ -64,3 +64,39 @@ public enum Diagnostics {
         return FlowMatchSchedule(steps: steps, imageSeqLen: imageSeqLen, config: config).sigmas
     }
 }
+
+extension Diagnostics {
+    /// Checks the fused Q/K RMSNorm + RoPE kernel against the same math composed from MLX ops in fp32.
+    /// Returns the max absolute difference and the max difference measured in bf16 ulps of the reference.
+    public static func checkFusedQKNormRope(length: Int = 300, heads: Int = 32, headDim: Int = 128) -> (Float, Float) {
+        let key = MLXRandom.key(7)
+        let keys = MLXRandom.split(key: key, into: 4)
+        let q = (MLXRandom.normal([1, length, heads, headDim], key: keys[0]) * 3).asType(.bfloat16)
+        let k = (MLXRandom.normal([1, length, heads, headDim], key: keys[1]) * 3).asType(.bfloat16)
+        let wq = (1 + 0.1 * MLXRandom.normal([headDim], key: keys[2])).asType(.bfloat16)
+        let wk = (1 + 0.1 * MLXRandom.normal([headDim], key: keys[3])).asType(.bfloat16)
+        let angles = MLXArray((0..<(length * headDim / 2)).map { Float($0 % 977) * 0.37 }, [length, headDim / 2])
+        let (cos, sin) = (MLX.cos(angles), MLX.sin(angles))
+
+        func reference(_ x: MLXArray, _ w: MLXArray) -> MLXArray {
+            let xf = x.asType(.float32)
+            let n = xf * rsqrt(mean(xf * xf, axis: -1, keepDims: true) + 1e-6) * w.asType(.float32)
+            let pairs = n.reshaped(1, length, heads, headDim / 2, 2)
+            let (re, im) = (pairs[.ellipsis, 0], pairs[.ellipsis, 1])
+            let c = cos[.newAxis, 0..., .newAxis, 0...]
+            let s = sin[.newAxis, 0..., .newAxis, 0...]
+            return stacked([re * c - im * s, re * s + im * c], axis: -1).reshaped(x.shape)
+        }
+        let (fq, fk) = FusedKernels.qkNormRope(q: q, k: k, weightQ: wq, weightK: wk, cos: cos, sin: sin, eps: 1e-6)
+        var maxAbs: Float = 0
+        var maxUlp: Float = 0
+        for (fused, ref) in [(fq, reference(q, wq)), (fk, reference(k, wk))] {
+            let diff = abs(fused.asType(.float32) - ref)
+            // bf16 has 8 significand bits: one ulp at |x| is 2^(floor(log2|x|) - 7).
+            let ulp = MLX.pow(MLXArray(Float(2)), floor(log2(maximum(abs(ref), MLXArray(Float(1e-30))))) - 7)
+            maxAbs = max(maxAbs, diff.max().item(Float.self))
+            maxUlp = max(maxUlp, (diff / ulp).max().item(Float.self))
+        }
+        return (maxAbs, maxUlp)
+    }
+}

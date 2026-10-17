@@ -21,6 +21,8 @@ let usage = """
       --steps <n>              Denoising steps (default 40)
       --seed <n>               Seed (default random)
       --output <file.png>      Output path (default ./outputs/<timestamp>-<seed>.png)
+      --lora <file[:scale]>    LoRA to bake into the transformer (comma-separate several)
+      --scheduler <name>       linear (default) or viggle_turbo (6 steps)
     """
 
 struct Arguments {
@@ -77,7 +79,13 @@ do {
             prompt: args.require("prompt"), negativePrompt: args.string("negative-prompt"),
             width: args.int("width", 1024), height: args.int("height", 1024), steps: args.int("steps", 40),
             trueCFGScale: args.float("cfg", 1.0),
-            seed: args.string("seed").flatMap(UInt64.init) ?? UInt64.random(in: 0..<UInt64(UInt32.max)))
+            seed: args.string("seed").flatMap(UInt64.init) ?? UInt64.random(in: 0..<UInt64(UInt32.max)),
+            scheduler: SamplerSchedule(rawValue: args.string("scheduler") ?? "linear") ?? .linear,
+            loras: (args.string("lora") ?? "").split(separator: ",").map { item in
+                let parts = item.split(separator: ":", maxSplits: 1)
+                let path = (String(parts[0]) as NSString).expandingTildeInPath
+                return LoRASpec(path: path, scale: parts.count > 1 ? Float(parts[1]) ?? 1 : 1)
+            })
         print("seed \(request.seed), \(request.width)x\(request.height), \(request.steps) steps"
             + (request.usesTrueCFG ? ", true CFG \(request.trueCFGScale)" : ""))
 
@@ -113,7 +121,15 @@ do {
             output = dir.appending(path: "\(stamp)-\(request.seed).png")
         }
         try ImageWriter.write(image, model: model.root.lastPathComponent, to: output)
-        for t in image.timings { print(String(format: "  %-20@ %7.1fs", t.stage.rawValue as NSString, t.seconds)) }
+        for t in image.timings {
+            print(String(format: "  %-20@ %7.1fs  footprint peak %@", t.stage.rawValue as NSString, t.seconds,
+                formatBytes(t.peakFootprintBytes)))
+        }
+        print("step seconds: " + image.stepSeconds.map { String(format: "%.2f", $0) }.joined(separator: " "))
+        if image.stepSeconds.count > 1 {
+            let steady = image.stepSeconds.dropFirst()
+            print(String(format: "steady-state %.3f s/step (steps 2-%d)", steady.reduce(0, +) / Double(steady.count), image.stepSeconds.count))
+        }
         print(String(format: "total %.1fs, peak MLX memory %@", image.totalSeconds, formatBytes(image.peakMemoryBytes)))
         print("saved \(output.path)")
 
@@ -142,6 +158,10 @@ do {
         try Diagnostics.dumpVAE(
             model: model, input: args.url("in")!, latentHeight: args.int("height", 1024) / 16,
             latentWidth: args.int("width", 1024) / 16, float32: args.string("dtype") == "f32", to: args.url("out")!)
+
+    case "debug-kernel":
+        let (maxAbs, maxUlp) = Diagnostics.checkFusedQKNormRope()
+        print(String(format: "fused qk-norm-rope vs fp32 composed: max abs %.3g, max %.2f bf16 ulp", maxAbs, maxUlp))
 
     default:
         print(usage)

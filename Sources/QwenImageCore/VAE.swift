@@ -117,6 +117,11 @@ final class QwenImageVAEDecoder: ParameterContainer {
         convOut = try conv("decoder.conv_out")
     }
 
+    static let decodeCacheLimit: Int = {
+        let mb = ProcessInfo.processInfo.environment["LINGXI_VAE_CACHE_MB"].flatMap(Int.init) ?? 256
+        return mb * 1_048_576
+    }()
+
     /// Wan-style RMS norm over channels: `F.normalize(x) * sqrt(C) * gamma`, normalized in fp32.
     private func channelNorm(_ x: MLXArray, _ gamma: MLXArray) -> MLXArray {
         let xf = x.asType(.float32)
@@ -163,6 +168,16 @@ final class QwenImageVAEDecoder: ParameterContainer {
         _ packed: MLXArray, latentHeight: Int, latentWidth: Int, evalEachStage: Bool = true,
         trace: ((String, MLXArray) -> Void)? = nil
     ) -> MLXArray {
+        // Full-resolution activations are large (1024² x 288 ch fp32 = 1.2 GB) and the convolutions allocate
+        // big transient workspaces. Returning freed buffers to the OS right away, and materializing after every
+        // residual block, keeps the process footprint near the live working set instead of the sum of all
+        // transients. Neither changes any arithmetic.
+        let cacheLimit = Memory.cacheLimit
+        Memory.cacheLimit = Self.decodeCacheLimit
+        defer {
+            Memory.cacheLimit = cacheLimit
+            Memory.clearCache()
+        }
         var x = packed.asType(.float32).reshaped(1, latentHeight, latentWidth, -1)
         x = (x * latentsStd + latentsMean).asType(dtype)
         x = convIn(postQuantConv(x))
@@ -176,7 +191,10 @@ final class QwenImageVAEDecoder: ParameterContainer {
         if evalEachStage { eval(x) }
         for (index, block) in upBlocks.enumerated() {
             let input = x
-            for resnet in block.resnets { x = resBlock(resnet, x) }
+            for resnet in block.resnets {
+                x = resBlock(resnet, x)
+                if evalEachStage { eval(x) }
+            }
             if let upsampler = block.upsampler {
                 x = upsampler(nearestUpsample(x))
                 x = x + dupUp(input, inDim: block.inDim, outDim: block.outDim, temporalFactor: block.temporalFactor)

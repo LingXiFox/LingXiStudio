@@ -19,9 +19,8 @@ public struct GenerationMetadata: Codable, Sendable {
     public var precision = "bf16"
     public var mode = "text-to-image"
     public var request: GenerationRequest
-    public var scheduler = "flow-match-euler (exponential shift, terminal 0.02)"
-    public var loras: [String] = []
     public var timings: [StageTiming]
+    public var stepSeconds: [Double]
     public var totalSeconds: Double
     public var peakMemoryBytes: Int
     public var createdAt: Date
@@ -31,7 +30,7 @@ public enum ImageWriter {
     /// Writes a lossless RGBA PNG plus `<name>.json` with the full generation record.
     public static func write(_ image: GeneratedImage, model: String, to url: URL) throws {
         let metadata = GenerationMetadata(
-            model: model, request: image.request, timings: image.timings, totalSeconds: image.totalSeconds,
+            model: model, request: image.request, timings: image.timings, stepSeconds: image.stepSeconds, totalSeconds: image.totalSeconds,
             peakMemoryBytes: image.peakMemoryBytes, createdAt: Date())
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]

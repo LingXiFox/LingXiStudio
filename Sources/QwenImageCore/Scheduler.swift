@@ -45,23 +45,35 @@ public struct FlowMatchSchedule: Sendable {
 
     public var steps: Int { sigmas.count - 1 }
 
+    /// Raw sigma nodes of the Viggle turbo LoRA (6 transformer passes). Its model card samples them with the
+    /// resolution shift but without the terminal stretch.
+    public static let viggleTurboNodes: [Double] = [1.0, 0.9375, 0.875, 0.75, 0.5, 0.25]
+
+    /// Default linear grid: `np.linspace(1.0, 1 / steps, steps)`.
+    public static func linearNodes(steps: Int) -> [Double] {
+        (0..<steps).map { i in
+            steps == 1 ? 1.0 : 1.0 + (1.0 / Double(steps) - 1.0) * Double(i) / Double(steps - 1)
+        }
+    }
+
     public init(steps: Int, imageSeqLen: Int, config: Config = Config()) {
-        precondition(steps > 0)
+        self.init(nodes: Self.linearNodes(steps: steps), imageSeqLen: imageSeqLen, config: config)
+    }
+
+    public init(nodes: [Double], imageSeqLen: Int, config: Config = Config(), useTerminal: Bool = true) {
+        precondition(!nodes.isEmpty)
         let m = (config.maxShift - config.baseShift) / Double(config.maxImageSeqLen - config.baseImageSeqLen)
         let b = config.baseShift - m * Double(config.baseImageSeqLen)
         let mu = Double(imageSeqLen) * m + b
         self.mu = mu
 
-        // np.linspace(1.0, 1 / steps, steps)
-        var values: [Double] = (0..<steps).map { i in
-            steps == 1 ? 1.0 : 1.0 + (1.0 / Double(steps) - 1.0) * Double(i) / Double(steps - 1)
-        }
+        var values = nodes
         if config.useDynamicShifting {
             values = values.map { t in exp(mu) / (exp(mu) + (1 / t - 1)) }
         } else {
             values = values.map { t in config.shift * t / (1 + (config.shift - 1) * t) }
         }
-        if let terminal = config.shiftTerminal, terminal > 0 {
+        if useTerminal, let terminal = config.shiftTerminal, terminal > 0 {
             let scale = (1 - values[values.count - 1]) / (1 - terminal)
             values = values.map { 1 - (1 - $0) / scale }
         }
