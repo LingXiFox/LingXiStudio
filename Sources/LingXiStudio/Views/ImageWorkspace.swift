@@ -51,12 +51,11 @@ struct PreviewPane: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openWindow) private var openWindow
     @State private var zoom = ZoomState()
-    @AppStorage("showFilmstrip") private var showFilmstrip = true
 
     var body: some View {
         VStack(spacing: 0) {
             if let item = model.selectedArtwork {
-                CanvasToolbar(item: item, zoom: $zoom, showFilmstrip: $showFilmstrip)
+                CanvasToolbar(item: item, zoom: $zoom)
             }
             ZStack {
                 if let item = model.selectedArtwork, !model.isRunning {
@@ -91,40 +90,7 @@ struct PreviewPane: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            if showFilmstrip && !model.artworks.isEmpty { Filmstrip() }
         }
-    }
-}
-
-/// Collapsible strip of recent artworks under the canvas.
-struct Filmstrip: View {
-    @Environment(AppModel.self) private var model
-
-    var body: some View {
-        ScrollView(.horizontal) {
-            LazyHStack(spacing: 6) {
-                ForEach(model.artworks.prefix(40)) { item in
-                    let selected = item.url == model.selection
-                    Button { model.selection = item.url } label: {
-                        Thumbnail(url: item.url, size: 46, corner: 6)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .strokeBorder(selected ? Brand.fox : .clear, lineWidth: 2))
-                        .opacity(selected ? 1 : 0.85)
-                    }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel(item.prompt ?? item.url.lastPathComponent)
-                        .accessibilityAddTraits(selected ? .isSelected : [])
-                        .contextMenu { ImageActionsMenu(item: item) }
-                        .help(item.prompt ?? item.url.lastPathComponent)
-                }
-            }
-            .padding(.horizontal, Metrics.m).padding(.vertical, 7)
-        }
-        .scrollIndicators(.never)
-        .frame(height: 60)
-        .background(Brand.side)
-        .overlay(alignment: .top) { Rectangle().fill(Brand.hairline).frame(height: 1) }
     }
 }
 
@@ -210,7 +176,7 @@ struct ProgressOverlay: View {
     }
 }
 
-/// Failure or cancellation of the last task, shown in the canvas until dismissed.
+/// Failure or cancellation of the last task, dismissed automatically after a brief display.
 struct NoticeOverlay: View {
     @Environment(AppModel.self) private var model
     let notice: AppModel.CanvasNotice
@@ -242,6 +208,11 @@ struct NoticeOverlay: View {
         .overlay(RoundedRectangle(cornerRadius: Metrics.radiusL, style: .continuous)
             .strokeBorder(notice.failed ? Brand.danger.opacity(0.4) : Brand.hairline))
         .shadow(color: .black.opacity(0.12), radius: 10, y: 3)
+        .task(id: notice.id) {
+            do { try await Task.sleep(for: .seconds(notice.failed ? 6 : 3)) }
+            catch { return }
+            if model.canvasNotice?.id == notice.id { model.canvasNotice = nil }
+        }
     }
 }
 
@@ -251,8 +222,6 @@ struct CanvasToolbar: View {
     @Environment(\.openWindow) private var openWindow
     let item: Artwork
     @Binding var zoom: ZoomState
-    @Binding var showFilmstrip: Bool
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         HStack(spacing: 2) {
@@ -274,11 +243,6 @@ struct CanvasToolbar: View {
                 .help("复制图像")
             Button("另存为", systemImage: "square.and.arrow.down") { ImageFileActions.saveAs(item, settings: model.exportSettings) }
                 .help("另存为…")
-            Button("胶片栏", systemImage: showFilmstrip ? "rectangle.bottomthird.inset.filled" : "rectangle") {
-                withAnimation(reduceMotion ? nil : .snappy(duration: 0.2)) { showFilmstrip.toggle() }
-            }
-            .help(showFilmstrip ? "收起胶片栏" : "显示胶片栏")
-            .accessibilityValue(showFilmstrip ? "已展开" : "已收起")
             Menu {
                 ImageActionsMenu(item: item)
             } label: {

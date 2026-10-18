@@ -11,8 +11,9 @@ final class AppModel {
     enum ManagementTab: String, CaseIterable { case lora, history, tasks }
     enum Appearance: String, CaseIterable { case system, light, dark }
 
-    /// Outcome of the last task that did not produce an image, shown inside the canvas until dismissed.
-    struct CanvasNotice: Equatable {
+    /// Brief outcome of the last task that did not produce an image.
+    struct CanvasNotice: Equatable, Identifiable {
+        let id = UUID()
         var failed: Bool
         var title: String
         var detail: String?
@@ -493,9 +494,10 @@ final class AppModel {
             case .success: tasks[index].status = .done
             case .failure(PipelineError.cancelled):
                 tasks[index].status = .cancelled
+                selection = nil
                 canvasNotice = CanvasNotice(
                     failed: false, title: "已取消",
-                    detail: tasks[index].outputs.isEmpty ? "当前作品保持不变" : "已完成的 \(tasks[index].outputs.count) 张已保存")
+                    detail: tasks[index].outputs.isEmpty ? nil : "已完成的 \(tasks[index].outputs.count) 张已保存在图库")
             case .failure(let error):
                 tasks[index].status = .failed(Self.explain(error))
                 canvasNotice = CanvasNotice(failed: true, title: "生成失败", detail: Self.explain(error))

@@ -10,9 +10,9 @@ Date: 2026-10-18. Base commit: `6703050` plus the existing, uncommitted native U
 - Prompt presets and prompt history open independent, searchable windows with full text previews and explicit use / append actions. Generation presets in the top toolbar retain their existing menu.
 - Clicking outside an active text editor or numeric field resigns text focus. Numeric fields commit through AppKit's normal validation; the click continues to its original destination.
 - Segmented controls use a thin fox-orange keyboard focus outline in place of the system blue ring. Reduce Motion disables their selection animation and progress interpolation.
-- Canvas tools are compact and outside the artwork. Filmstrip visibility stays reachable during generation; thumbnails are keyboard-accessible buttons.
+- Canvas tools are compact and outside the artwork. The duplicate filmstrip and its toolbar toggle were removed after the user's screenshot review; the history gallery remains the single inline image browser.
 - LoRA rows reserve a line for the name and keep enable / scale controls compact. Rank, target count, file size and coverage are available in the action menu and tooltip.
-- Generation covers the preview with an opaque canvas during preparation and generation, following the user's later request to hide the previous artwork. It displays actual stage, step count, measured average s/step, denoising ETA and cancellation. Cancellation restores the selected completed artwork. There is no intermediate decode or new GPU work for previews.
+- Generation covers the preview with an opaque canvas during preparation and generation, following the user's later request to hide the previous artwork. It displays actual stage, step count, measured average s/step, denoising ETA and cancellation. Cancellation clears the preview selection; completed files remain in the gallery. Cancellation notices dismiss after three seconds, errors after six; task history keeps the full outcome. There is no intermediate decode or new GPU work for previews.
 - Global resources, performance policy and diagnostics stay in Settings / Runtime Inspector. The initial UI iteration changed no core execution source; the cancellation follow-up adds checks at existing weight-loading batches and text-encoder layer boundaries without adding evaluations or changing precision, sampling or LoRA operations.
 
 ## Verification
@@ -38,7 +38,7 @@ Date: 2026-10-18. Base commit: `6703050` plus the existing, uncommitted native U
 The image comparison used the same ImageIO / CoreGraphics RGBA rendering for both files. SHA-256:
 `ef3aaad4f284a8c95f26781a25e3ec7b9188fb75063dd36021b2fa5c917fd229`.
 
-Follow-up cancellation checks: 11 XCTest cases passed with zero failures, including cancellation before loading, between existing loading batches and between existing text-encoder layer evaluations. One-click UI acknowledgement, the opaque canvas and the reported condition-encoding stutter still require a new manual run; the older screenshots and image comparison above do not verify this follow-up.
+Follow-up cancellation checks: 11 XCTest cases passed with zero failures, including cancellation before loading, between existing loading batches and between existing text-encoder layer evaluations. A new real task on commit `7fef9d1` logged one cancellation request and finished cancellation about one second later. The user reported that the stutter was gone. Their screenshot exposed the persistent notice, restored previous artwork and duplicate filmstrip, prompting the next canvas cleanup. Automatic notice dismissal and cancellation leaving an empty preview still require manual acceptance of that cleanup. The older screenshots and image comparison above do not verify it.
 
 Compared outputs:
 
