@@ -388,7 +388,7 @@ extension Diagnostics {
     ) throws -> (steps: [Double], footprint: Int, mlxPeak: Int) {
         let cacheLimit = Memory.cacheLimit
         if ProcessInfo.processInfo.environment["LINGXI_DIT_CACHE"] != "0" {
-            Memory.cacheLimit = min(cacheLimit, 512 << 20)
+            Memory.cacheLimit = min(cacheLimit, 128 << 20)
         }
         defer { Memory.cacheLimit = cacheLimit }
         print("DiT idle cache limit: \(Memory.cacheLimit) bytes")

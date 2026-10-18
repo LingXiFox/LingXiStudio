@@ -32,8 +32,7 @@ let usage = """
       --init <file>            Start image for img2img
       --mask <file>            Inpaint mask, white = repaint (--invert 1, --feather <px>, --keep-unmasked 0)
       --strength <0..1>        Share of the schedule run from the noised start image (default 1)
-      --thermal-samples 1     Four thermal/throughput probes in a 6-step benchmark (outside step timing)
-      --thermal-wait 1        Quality checks only: wait on failed probes; total time includes cooling
+      --thermal-samples 1     Four diagnostic probes in six steps; never pause or cancel generation
       --embedding-cache 0     Disable lossless text-conditioning reuse (enabled by default)
     """
 
@@ -151,16 +150,6 @@ do {
         let pipeline = try QwenImagePipeline(model: model)
         var lastStage: GenerationStage?
         let sampleThermals = args.string("thermal-samples") == "1" && request.steps == 6
-        let waitForThermals = args.string("thermal-wait") == "1"
-        let coldTFLOPS = Double(ProcessInfo.processInfo.environment["COLD_TFLOPS"] ?? "13.1") ?? 13.1
-        let thermalGate = Double(ProcessInfo.processInfo.environment["GATE_TFLOPS"] ?? "") ?? coldTFLOPS * 0.98
-        if waitForThermals {
-            guard sampleThermals, thermalGate.isFinite, thermalGate > 0 else {
-                FileHandle.standardError.write(Data("--thermal-wait requires --thermal-samples 1, six steps and a positive thermal gate\n".utf8))
-                exit(2)
-            }
-            print("QUALITY ONLY: cooling waits count toward total time; do not use step rates as a continuous benchmark")
-        }
         let image = try pipeline.generate(request, inputs: inputs, useEmbeddingCache: args.string("embedding-cache") != "0") { p in
             if sampleThermals && ((p.stage == .prefill && p.fraction == 0)
                 || (p.stage == .denoising && [2, 4, 6].contains(p.step))) {
@@ -168,17 +157,6 @@ do {
                 let probe = autoreleasepool { Diagnostics.probeThermal() }
                 let step = p.stage == .prefill ? 0 : p.step
                 print(String(format: "\nthermal sample step %d/6: %@ %.3f TFLOPS", step, probe.thermalState, probe.tflops))
-                if waitForThermals, probe.thermalState != "nominal" || probe.tflops < thermalGate {
-                    // Quality-only runs may cool at stage boundaries; never report their rate as a continuous benchmark.
-                    var passes = 0
-                    repeat {
-                        Thread.sleep(forTimeInterval: 30)
-                        let recovered = autoreleasepool { Diagnostics.probeThermal() }
-                        passes = recovered.thermalState == "nominal" && recovered.tflops >= thermalGate ? passes + 1 : 0
-                        print(String(format: "quality cooling step %d: %@ %.3f TFLOPS (%d/2)",
-                            step, recovered.thermalState, recovered.tflops, passes))
-                    } while passes < 2
-                }
             }
             if p.stage != lastStage {
                 if lastStage != nil { print("") }

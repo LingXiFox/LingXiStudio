@@ -2,6 +2,8 @@
 
 日期：2026-10-18；设备为 M5 MacBook Air / 32 GB，接交流电。阶段基线：`3ecb274`。
 
+> 本文保留首阶段的原始方法和失败记录。当前验收已调整为[Runtime 连续稳定性标准](runtime-stability-acceptance.md)：吞吐不足只影响性能成绩有效性，不再强制中止生成；当前 DiT 空闲缓存预算已调整为 128 MiB。下文“未过门限”不等同于资源不安全或实际任务失败；历史被中止的记录也不追认成完整通过。
+
 ## 约束与验收
 
 - Turbo v0.3 r256 始终占第一项，随后依次加入 Qwen Fix v2、Canon DSLR、Samsung Photo；性能矩阵统一各 1.0 强度，1024² / Seed 42 / CFG 1 / 完整 Turbo 6 步。

@@ -423,7 +423,7 @@ public final class QwenImagePipeline: @unchecked Sendable {
         @inline(never) func runTransformer() throws {
             let cacheLimit = Memory.cacheLimit
             if ProcessInfo.processInfo.environment["LINGXI_DIT_CACHE"] != "0" {
-                Memory.cacheLimit = min(cacheLimit, 512 << 20)
+                Memory.cacheLimit = min(cacheLimit, 128 << 20)
             }
             defer { Memory.cacheLimit = cacheLimit }
             let transformer = try QwenImageTransformer(
