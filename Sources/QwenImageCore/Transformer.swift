@@ -123,6 +123,10 @@ final class QwenImageTransformer: ParameterContainer {
     /// Every base linear layer a LoRA may target, grouped by shared input. Groups with several targets run
     /// their LoRA down-projections as one matmul.
     private func loraLayout() -> [(group: String, targets: [String], shapes: [[Int]])] {
+        Self.loraLayout(config)
+    }
+
+    static func loraLayout(_ config: Config = Config()) -> [(group: String, targets: [String], shapes: [[Int]])] {
         let d = config.dim
         let mlp = d * config.mlpRatio
         var layout: [(String, [String], [[Int]])] = [

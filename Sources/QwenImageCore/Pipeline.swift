@@ -164,6 +164,8 @@ public final class QwenImagePipeline: @unchecked Sendable {
         let sampler = FootprintSampler()
         sampler.start()
         defer { sampler.stop() }
+        // Cancellation and errors leave a stage early; its freed buffers must not stay in the MLX cache.
+        defer { releaseStageMemory() }
         _ = sampler.takePeak()
 
         func report(_ stage: GenerationStage, _ fraction: Double, step: Int = 0, secondsPerStep: Double? = nil) {
@@ -191,7 +193,9 @@ public final class QwenImagePipeline: @unchecked Sendable {
 
         report(.loadingTextEncoder, 0)
         var embeddings: [MLXArray] = []
-        do {
+        // Each stage runs in its own autorelease pool: Metal command buffers are autoreleased and keep the buffers
+        // they used alive, and a thread without a run loop would otherwise hold them until the whole run ends.
+        try autoreleasepool {
             let encoder = try QwenTextEncoder(store: WeightStore(directory: model.textEncoder, component: "text_encoder"))
             encoder.materialize { report(.loadingTextEncoder, $0) }
             finish(.loadingTextEncoder)
@@ -217,7 +221,7 @@ public final class QwenImagePipeline: @unchecked Sendable {
         let schedule = schedule(for: request, imageTokens: imageTokens)
         var stepTimes: [Double] = []
         var latents = MLXRandom.normal([1, imageTokens, 64], key: MLXRandom.key(request.seed)).asType(.bfloat16)
-        do {
+        try autoreleasepool {
             let transformer = try QwenImageTransformer(
                 store: WeightStore(directory: model.transformer, component: "transformer"))
             transformer.materialize { report(.loadingTransformer, $0) }
@@ -266,8 +270,7 @@ public final class QwenImagePipeline: @unchecked Sendable {
 
         // 3. Decoding.
         report(.loadingVAE, 0)
-        var pixels: MLXArray
-        do {
+        let pixels = try autoreleasepool { () throws -> MLXArray in
             let vae = try QwenImageVAEDecoder(
                 store: WeightStore(directory: model.vae, component: "vae"),
                 configURL: model.vae.appending(path: "config.json"), dtype: .float32)
@@ -276,8 +279,9 @@ public final class QwenImagePipeline: @unchecked Sendable {
 
             report(.decoding, 0)
             let image = vae.decode(latents, latentHeight: latentHeight, latentWidth: latentWidth)
-            pixels = QwenImagePipeline.toRGBA8(image)
+            let pixels = QwenImagePipeline.toRGBA8(image)
             eval(pixels)
+            return pixels
         }
         let rgba = pixels.asArray(UInt8.self)
         releaseStageMemory()

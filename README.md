@@ -22,6 +22,26 @@ dynamically — base weights are never modified, adapters load, unload, enable, 
 rank-256 turbo LoRA applied on the fly, steady-state denoising runs at 6.05 s/step (median of 5 thermally gated runs),
 which is the baked speed plus the LoRA's own arithmetic.
 
+## Workbench app (P0)
+
+`Scripts/make-app.sh` builds `dist/LingXiStudio.app` (SwiftUI, no extra dependencies, ad-hoc signed). The main window
+follows the product spec: parameters on the left 2/3; on the right, the image workspace (top) and the mode switcher
+with LoRA / history / task tabs (bottom), split 1:1. Dividers drag; double-click one to restore it.
+
+| Area | What works |
+|---|---|
+| Model | Folder selection, integrity check per component, live residency (text encoder → transformer → VAE) |
+| Prompt | Positive / negative (negative only active with true CFG), prompt history |
+| Parameters | Size presets and custom (multiples of 32), steps, guidance, seed (random / fixed, actual seed shown), batch count with seed rule, standard / Turbo schedule (Turbo needs an enabled acceleration LoRA, locks 6 steps), measured time estimate |
+| Performance | 32 GB balanced profile; app footprint, MLX allocation, swap, memory pressure, thermal state, stage, s/step, ETA |
+| LoRA | Import (file panel or drag), several at once, enable / scale / order / remove, compatibility check without loading the model; changes apply to the next queued task |
+| Tasks | Serial queue, cancel (memory is released), retry with the same parameters, logs, records kept across launches |
+| Images | Fit / 100 % / zoom / pan, standalone viewer window, save as, copy image / file / path / prompt, reveal in Finder, reuse all parameters, regenerate with the same seed, move to Trash |
+
+Reference images, image-to-image, editing and inpainting are shown in the mode switcher but disabled with the reason:
+the native executor does not implement those model paths yet. Quantized profiles and step caching are listed as
+unavailable for the same reason.
+
 ## Layout
 
 | Path | Purpose |
@@ -38,6 +58,8 @@ which is the baked speed plus the LoRA's own arithmetic.
 | `Sources/QwenImageCore/Runtime.swift` | Process-wide MLX settings (command buffer size), call before any MLX use |
 | `Sources/QwenImageCore/ProcessMemory.swift` | Process footprint sampling per stage |
 | `Sources/qwen-image/main.swift` | CLI (`generate`, `validate`, numeric `debug-*` dumps) |
+| `Sources/LingXiStudio/` | SwiftUI workbench: `AppModel` (state, queue, persistence), `GenerationEngine` (single MLX thread), views |
+| `Scripts/make-app.sh` | Builds and ad-hoc signs `dist/LingXiStudio.app` |
 | `Scripts/benchmark.sh` | Same-config benchmark (LingXi / frozen baseline / MFLUX), thermally gated |
 | `Scripts/thermal-gate.sh` | Waits until the GPU probe is back to cold throughput |
 | `Tests/Parity/` | Staged numerical parity suite against diffusers (development only, needs Python) |

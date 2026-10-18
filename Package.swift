@@ -7,6 +7,7 @@ let package = Package(
     products: [
         .library(name: "QwenImageCore", targets: ["QwenImageCore"]),
         .executable(name: "qwen-image", targets: ["qwen-image"]),
+        .executable(name: "LingXiStudio", targets: ["LingXiStudio"]),
     ],
     dependencies: [
         .package(url: "https://github.com/ml-explore/mlx-swift", exact: "0.32.3"),
@@ -21,6 +22,10 @@ let package = Package(
         ),
         .executableTarget(
             name: "qwen-image",
+            dependencies: ["QwenImageCore"]
+        ),
+        .executableTarget(
+            name: "LingXiStudio",
             dependencies: ["QwenImageCore"]
         ),
     ]

@@ -81,6 +81,60 @@ public final class LoRAAdapter: @unchecked Sendable {
     }
 }
 
+/// What a LoRA file contains and whether it fits the Qwen-Image-2.1 transformer, read without loading the model.
+public struct LoRAInspection: Sendable {
+    public var path: String
+    public var fileBytes: Int64
+    public var rank: Int
+    /// PEFT `lora_alpha` (or the per-layer `.alpha`), when the file records one.
+    public var alpha: Float?
+    public var targetCount: Int
+    public var dtype: String
+    /// Short labels for what the adapter touches, e.g. "attention", "MLP", "timestep".
+    public var coverage: [String]
+    /// Reasons the adapter cannot be applied; empty when it fits.
+    public var problems: [String]
+
+    public var isCompatible: Bool { problems.isEmpty }
+    public var name: String { URL(fileURLWithPath: path).lastPathComponent }
+}
+
+extension LoRAAdapter {
+    /// Reads the adapter's header and checks every target against the transformer layout (names and shapes).
+    public static func inspect(path: String) throws -> LoRAInspection {
+        let adapter = try LoRAAdapter(path: path)
+        let bytes = (try? FileManager.default.attributesOfItem(atPath: path)[.size] as? Int64) ?? 0
+        var shapes: [String: [Int]] = [:]
+        for item in QwenImageTransformer.loraLayout() {
+            for (target, shape) in zip(item.targets, item.shapes) { shapes[target] = shape }
+        }
+        var problems: [String] = []
+        if adapter.targets.isEmpty { problems.append("No PEFT LoRA layers (lora_A / lora_B) found") }
+        let unmatched = adapter.targets.keys.filter { shapes[$0] == nil }.sorted()
+        if !unmatched.isEmpty {
+            problems.append("\(unmatched.count) layer(s) are not in Qwen-Image-2.1, e.g. \(unmatched.prefix(2).joined(separator: ", "))")
+        }
+        for (target, f) in adapter.targets.sorted(by: { $0.key < $1.key }) {
+            guard let base = shapes[target] else { continue }
+            if f.a.dim(1) != base[1] || f.b.dim(0) != base[0] || f.a.dim(0) != f.b.dim(1) {
+                problems.append("\(target): factors \(f.b.dim(0))x\(f.a.dim(1)) do not fit \(base[0])x\(base[1])")
+                break
+            }
+        }
+        let keys = adapter.targets.keys
+        var coverage: [String] = []
+        if keys.contains(where: { $0.contains(".attn.") }) { coverage.append("attention") }
+        if keys.contains(where: { $0.contains(".img_mlp.") }) { coverage.append("MLP") }
+        if keys.contains(where: { $0.hasPrefix("modulation") }) { coverage.append("modulation") }
+        if keys.contains(where: { $0.hasPrefix("time_text_embed") }) { coverage.append("timestep") }
+        let first = adapter.targets.values.first
+        return LoRAInspection(
+            path: path, fileBytes: bytes, rank: adapter.rank,
+            alpha: first.map { $0.alphaOverRank * Float($0.a.dim(0)) }, targetCount: adapter.targetCount,
+            dtype: first.map { "\($0.a.dtype)" } ?? "-", coverage: coverage, problems: problems)
+    }
+}
+
 /// Ordered set of loaded adapters with per-adapter enable state and strength.
 ///
 /// Loading, unloading, enabling, disabling and rescaling only change this list; base weights are never touched.

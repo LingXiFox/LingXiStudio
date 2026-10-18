@@ -14,3 +14,4 @@ outputs/
 .env
 .env.*
 !.env.example
+dist/

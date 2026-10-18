@@ -26,6 +26,16 @@ public struct GenerationMetadata: Codable, Sendable {
     public var createdAt: Date
 }
 
+extension GenerationMetadata {
+    /// Reads the sidecar `<name>.json` written next to a PNG.
+    public static func read(sidecarOf png: URL) throws -> GenerationMetadata {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let data = try Data(contentsOf: png.deletingPathExtension().appendingPathExtension("json"))
+        return try decoder.decode(GenerationMetadata.self, from: data)
+    }
+}
+
 public enum ImageWriter {
     /// Writes a lossless RGBA PNG plus `<name>.json` with the full generation record.
     public static func write(_ image: GeneratedImage, model: String, to url: URL) throws {

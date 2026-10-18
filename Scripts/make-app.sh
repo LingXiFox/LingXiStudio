@@ -1,0 +1,35 @@
+#!/bin/zsh
+# Builds dist/LingXiStudio.app: the release SwiftUI executable plus MLX's Metal library bundle, ad-hoc signed.
+# MLX finds `mlx-swift_Cmlx.bundle/default.metallib` through the main bundle's Resources folder.
+set -euo pipefail
+root=${0:A:h:h}
+version=${VERSION:-0.2.0}
+cd "$root"
+swift build -c release --product LingXiStudio
+bin=$(swift build -c release --show-bin-path)
+app=$root/dist/LingXiStudio.app
+# Updated in place: the executable and plist are overwritten, the Metal bundle is merged with ditto.
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+cp -f "$bin/LingXiStudio" "$app/Contents/MacOS/LingXiStudio"
+ditto "$bin/mlx-swift_Cmlx.bundle" "$app/Contents/Resources/mlx-swift_Cmlx.bundle"
+cat > "$app/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleExecutable</key><string>LingXiStudio</string>
+  <key>CFBundleIdentifier</key><string>com.lingxifox.LingXiStudio</string>
+  <key>CFBundleName</key><string>LingXiStudio</string>
+  <key>CFBundleDisplayName</key><string>LingXiStudio</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>$version</string>
+  <key>CFBundleVersion</key><string>$version</string>
+  <key>LSMinimumSystemVersion</key><string>26.2</string>
+  <key>LSApplicationCategoryType</key><string>public.app-category.graphics-design</string>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>NSPrincipalClass</key><string>NSApplication</string>
+</dict>
+</plist>
+PLIST
+codesign --force --sign - "$app"
+echo "built $app"
