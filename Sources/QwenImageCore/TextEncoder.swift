@@ -56,21 +56,32 @@ final class QwenTextEncoder: ParameterContainer {
         embedTokens = try store.get("\(prefix).embed_tokens.weight")
         finalNorm = try store.get("\(prefix).norm.weight", shape: [d])
         layers = try (0..<config.layers).map { index in
-            let p = "\(prefix).layers.\(index)"
-            return Layer(
-                inputNorm: try store.get("\(p).input_layernorm.weight", shape: [d]),
-                postNorm: try store.get("\(p).post_attention_layernorm.weight", shape: [d]),
-                q: Linear(try store.get("\(p).self_attn.q_proj.weight", shape: [config.heads * config.headDim, d])),
-                k: Linear(try store.get("\(p).self_attn.k_proj.weight", shape: [config.kvHeads * config.headDim, d])),
-                v: Linear(try store.get("\(p).self_attn.v_proj.weight", shape: [config.kvHeads * config.headDim, d])),
-                o: Linear(try store.get("\(p).self_attn.o_proj.weight", shape: [d, config.heads * config.headDim])),
-                qNorm: try store.get("\(p).self_attn.q_norm.weight", shape: [config.headDim]),
-                kNorm: try store.get("\(p).self_attn.k_norm.weight", shape: [config.headDim]),
-                gate: Linear(try store.get("\(p).mlp.gate_proj.weight", shape: [config.intermediateSize, d])),
-                up: Linear(try store.get("\(p).mlp.up_proj.weight", shape: [config.intermediateSize, d])),
-                down: Linear(try store.get("\(p).mlp.down_proj.weight", shape: [d, config.intermediateSize]))
-            )
+            try Self.loadLayer(index, config: config) { key, shape in try store.get(key, shape: shape) }
         }
+    }
+
+    private static func loadLayer(_ index: Int, config: Config, weight: (String, [Int]) throws -> MLXArray) throws -> Layer {
+        let d = config.hiddenSize
+        let p = "model.language_model.layers.\(index)"
+        return Layer(
+            inputNorm: try weight("\(p).input_layernorm.weight", [d]),
+            postNorm: try weight("\(p).post_attention_layernorm.weight", [d]),
+            q: Linear(try weight("\(p).self_attn.q_proj.weight", [config.heads * config.headDim, d])),
+            k: Linear(try weight("\(p).self_attn.k_proj.weight", [config.kvHeads * config.headDim, d])),
+            v: Linear(try weight("\(p).self_attn.v_proj.weight", [config.kvHeads * config.headDim, d])),
+            o: Linear(try weight("\(p).self_attn.o_proj.weight", [d, config.heads * config.headDim])),
+            qNorm: try weight("\(p).self_attn.q_norm.weight", [config.headDim]),
+            kNorm: try weight("\(p).self_attn.k_norm.weight", [config.headDim]),
+            gate: Linear(try weight("\(p).mlp.gate_proj.weight", [config.intermediateSize, d])),
+            up: Linear(try weight("\(p).mlp.up_proj.weight", [config.intermediateSize, d])),
+            down: Linear(try weight("\(p).mlp.down_proj.weight", [d, config.intermediateSize])))
+    }
+
+    private init(config: Config, embedding: MLXArray, finalNorm: MLXArray) {
+        self.config = config
+        self.embedTokens = embedding
+        self.finalNorm = finalNorm
+        self.layers = []
     }
 
     /// Qwen3 RMSNorm: normalize in fp32, round to the activation dtype, then scale by the learned weight.
@@ -143,46 +154,93 @@ final class QwenTextEncoder: ParameterContainer {
         _ ids: [Int], vision: VisionInput? = nil, applyFinalNorm: Bool = false, evalEachLayer: Bool = true,
         checkCancelled: () throws -> Void = {}
     ) rethrows -> MLXArray {
-        let length = ids.count
+        var state = initialState(ids, vision: vision)
+        for (index, layer) in layers.enumerated() {
+            try checkCancelled()
+            state.hidden = apply(layer, index: index, state: state)
+            if evalEachLayer { eval(state.hidden) }
+        }
+        return (applyFinalNorm ? rmsNorm(state.hidden, finalNorm) : state.hidden).asType(embedTokens.dtype)
+    }
+
+    private struct EncodingState {
+        var hidden: MLXArray
+        let vision: VisionInput?
+        let tables: (MLXArray, MLXArray)?
+    }
+
+    private func initialState(_ ids: [Int], vision: VisionInput?) -> EncodingState {
         // The residual stream is kept in fp32: activations reach the thousands, where bf16 accumulation
         // drifts measurably from an fp32 reference. Matmuls and attention still run in bf16.
         var hidden = embedTokens[MLXArray(ids.map { Int32($0) })].expandedDimensions(axis: 0)
-        let dtype = embedTokens.dtype
         if config.residualFloat32 { hidden = hidden.asType(.float32) }
         // After the cast, so fp32 vision embeddings enter the fp32 residual stream unrounded.
         if let vision { hidden = scatter(hidden, vision.embeds, ranges: vision.ranges, add: false) }
+        let tables = vision.map { mropeTables($0.positions) }
+        return EncodingState(hidden: hidden, vision: vision, tables: tables)
+    }
+
+    private func apply(_ layer: Layer, index: Int, state: EncodingState) -> MLXArray {
+        var hidden = state.hidden
+        let length = hidden.dim(1)
+        let dtype = embedTokens.dtype
         let c = config
         let scale = 1 / Float(c.headDim).squareRoot()
-        let tables = vision.map { mropeTables($0.positions) }
-        for (index, layer) in layers.enumerated() {
-            try checkCancelled()
-            let residual = hidden
-            let x = rmsNorm(hidden, layer.inputNorm).asType(dtype)
-            var q = layer.q(x).reshaped(1, length, c.heads, c.headDim)
-            var k = layer.k(x).reshaped(1, length, c.kvHeads, c.headDim)
-            let v = layer.v(x).reshaped(1, length, c.kvHeads, c.headDim).transposed(0, 2, 1, 3)
-            q = rmsNorm(q, layer.qNorm).transposed(0, 2, 1, 3)
-            k = rmsNorm(k, layer.kNorm).transposed(0, 2, 1, 3)
-            if let tables {
-                q = applyRope(q, tables)
-                k = applyRope(k, tables)
-            } else {
-                // Text-only: all three M-RoPE axes carry the same position, which is plain 1D RoPE.
-                q = MLXFast.RoPE(q, dimensions: c.headDim, traditional: false, base: c.ropeTheta, scale: 1, offset: 0)
-                k = MLXFast.RoPE(k, dimensions: c.headDim, traditional: false, base: c.ropeTheta, scale: 1, offset: 0)
-            }
-            let attention = MLXFast.scaledDotProductAttention(
-                queries: q, keys: k, values: v, scale: scale, mask: .causal
-            ).transposed(0, 2, 1, 3).reshaped(1, length, c.heads * c.headDim)
-            hidden = residual + layer.o(attention)
-
-            let y = rmsNorm(hidden, layer.postNorm).asType(dtype)
-            hidden = hidden + layer.down(silu(layer.gate(y)) * layer.up(y))
-            if let vision, index < vision.deepstack.count {
-                hidden = scatter(hidden, vision.deepstack[index], ranges: vision.ranges, add: true)
-            }
-            if evalEachLayer { eval(hidden) }
+        let vision = state.vision
+        let tables = state.tables
+        let residual = hidden
+        let x = rmsNorm(hidden, layer.inputNorm).asType(dtype)
+        var q = layer.q(x).reshaped(1, length, c.heads, c.headDim)
+        var k = layer.k(x).reshaped(1, length, c.kvHeads, c.headDim)
+        let v = layer.v(x).reshaped(1, length, c.kvHeads, c.headDim).transposed(0, 2, 1, 3)
+        q = rmsNorm(q, layer.qNorm).transposed(0, 2, 1, 3)
+        k = rmsNorm(k, layer.kNorm).transposed(0, 2, 1, 3)
+        if let tables {
+            q = applyRope(q, tables)
+            k = applyRope(k, tables)
+        } else {
+            // Text-only: all three M-RoPE axes carry the same position, which is plain 1D RoPE.
+            q = MLXFast.RoPE(q, dimensions: c.headDim, traditional: false, base: c.ropeTheta, scale: 1, offset: 0)
+            k = MLXFast.RoPE(k, dimensions: c.headDim, traditional: false, base: c.ropeTheta, scale: 1, offset: 0)
         }
-        return (applyFinalNorm ? rmsNorm(hidden, finalNorm) : hidden).asType(dtype)
+        let attention = MLXFast.scaledDotProductAttention(
+            queries: q, keys: k, values: v, scale: scale, mask: .causal
+        ).transposed(0, 2, 1, 3).reshaped(1, length, c.heads * c.headDim)
+        hidden = residual + layer.o(attention)
+
+        let y = rmsNorm(hidden, layer.postNorm).asType(dtype)
+        hidden = hidden + layer.down(silu(layer.gate(y)) * layer.up(y))
+        if let vision, index < vision.deepstack.count {
+            hidden = scatter(hidden, vision.deepstack[index], ranges: vision.ranges, add: true)
+        }
+        return hidden
+    }
+
+    /// The existing layer math and evaluation boundaries, with only one language layer's weights resident.
+    static func encodeStreaming(
+        directory: URL, prompts: [(ids: [Int], vision: VisionInput?)], config: Config = Config(),
+        checkCancelled: () throws -> Void = {}, progress: ((Double) -> Void)? = nil
+    ) throws -> [MLXArray] {
+        var store = try WeightStore(directory: directory, component: "text_encoder")
+        let prefix = "model.language_model"
+        let kernel = QwenTextEncoder(config: config,
+            embedding: try store.take("\(prefix).embed_tokens.weight"),
+            finalNorm: try store.take("\(prefix).norm.weight", shape: [config.hiddenSize]))
+        var states = prompts.map { kernel.initialState($0.ids, vision: $0.vision) }
+        let cacheLimit = Memory.cacheLimit
+        Memory.cacheLimit = min(cacheLimit, 256 << 20)
+        defer { Memory.cacheLimit = cacheLimit }
+        for index in 0..<config.layers {
+            try checkCancelled()
+            try autoreleasepool {
+                let layer = try loadLayer(index, config: config) { key, shape in try store.take(key, shape: shape) }
+                for i in states.indices { states[i].hidden = kernel.apply(layer, index: index, state: states[i]) }
+                eval(states.map(\.hidden))
+            }
+            Stream.gpu.synchronize()
+            Memory.clearCache()
+            progress?(Double(index + 1) / Double(config.layers))
+        }
+        return states.map { $0.hidden.asType(kernel.embedTokens.dtype) }
     }
 }

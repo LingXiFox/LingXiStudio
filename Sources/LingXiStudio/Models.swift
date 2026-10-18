@@ -357,8 +357,9 @@ struct LiveProgress {
     var elapsed: TimeInterval
     var mlxActive: Int
     var mlxPeak: Int
+    var conditioningCacheHit = false
 
-    var stageLabel: String { stage.label }
+    var stageLabel: String { conditioningCacheHit && stage == .encodingPrompt ? "复用文本条件" : stage.label }
 
     var remaining: Double? {
         guard let rate = secondsPerStep else { return nil }

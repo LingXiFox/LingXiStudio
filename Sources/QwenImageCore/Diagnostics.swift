@@ -2,8 +2,43 @@ import Foundation
 import MLX
 
 /// Component-level entry points used to check numerics against a reference implementation.
-/// Each dumps its tensors to a safetensors file in fp32.
+/// Reference dumps use fp32; loading benchmarks preserve the native dtype.
 public enum Diagnostics {
+    /// Controlled loading experiment; outputs use identical full-precision weights for all batch sizes.
+    public static func benchTextEncoder(model: ModelDirectory, prompt: String, batch: Int, streamed: Bool = false, to url: URL) throws -> (
+        loading: Double, encoding: Double, footprint: Int, mlxPeak: Int
+    ) {
+        guard [4, 8, 16].contains(batch) else { throw WeightError.invalidBatch(batch) }
+        let sampler = FootprintSampler()
+        sampler.start()
+        defer { sampler.stop() }
+        Memory.peakMemory = 0
+        let pipeline = try QwenImagePipeline(model: model)
+        let tokens = try pipeline.promptTokens(prompt)
+        let start = Date()
+        if streamed {
+            let hidden = try QwenTextEncoder.encodeStreaming(directory: model.textEncoder, prompts: [(tokens.ids, nil)])[0]
+            eval(hidden)
+            let duration = Date().timeIntervalSince(start)
+            let peak = sampler.takePeak()
+            let mlxPeak = Memory.peakMemory
+            try save(arrays: ["hidden": hidden, "ids": MLXArray(tokens.ids.map { Int32($0) })], url: url)
+            return (0, duration, peak, mlxPeak)
+        }
+        let encoder = try QwenTextEncoder(store: WeightStore(directory: model.textEncoder, component: "text_encoder"))
+        try encoder.materialize(batch: batch)
+        let loading = Date().timeIntervalSince(start)
+        let loadPeak = sampler.takePeak()
+        let encodeStart = Date()
+        let hidden = try encoder(tokens.ids)
+        eval(hidden)
+        let encoding = Date().timeIntervalSince(encodeStart)
+        let peak = max(loadPeak, sampler.takePeak())
+        let mlxPeak = Memory.peakMemory
+        try save(arrays: ["hidden": hidden, "ids": MLXArray(tokens.ids.map { Int32($0) })], url: url)
+        return (loading, encoding, peak, mlxPeak)
+    }
+
     public static func tokenize(model: ModelDirectory, text: String) throws -> [Int] {
         try QwenTokenizer(directory: model.processor).encode(text)
     }

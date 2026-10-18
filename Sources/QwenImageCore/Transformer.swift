@@ -174,7 +174,7 @@ final class QwenImageTransformer: ParameterContainer {
         loraGroups = groups
         boundStack = ObjectIdentifier(stack)
         boundRevision = stack.revision
-        compiledImageStep = nil
+        discardCompiledStep()
     }
 
     var activeLoRAGroups: Int { loraGroups.count }
@@ -417,41 +417,46 @@ final class QwenImageTransformer: ParameterContainer {
         let segments = Self.segments(length: length, blocks: layout?.blocks ?? [])
         var keys: [MLXArray] = []
         var values: [MLXArray] = []
+        let cacheLimit = Memory.cacheLimit
+        Memory.cacheLimit = min(cacheLimit, 256 << 20)
+        defer { Memory.cacheLimit = cacheLimit }
         for index in blocks.indices {
-            let (q, k, v) = project(index, layerNorm(hidden) * (1 + mod.scale1), ropeTable)
-            keys.append(k)
-            values.append(v)
-            // The last block's prefix output feeds nothing downstream, only its K/V matter.
-            if index == blocks.count - 1 { break }
-            let attention: MLXArray
-            if segments.count == 1 {
-                attention = MLXFast.scaledDotProductAttention(queries: q, keys: k, values: v, scale: scale, mask: .causal)
-            } else {
-                attention = concatenated(
-                    segments.map { segment in
-                        let queries = q[0..., 0..., segment.range]
-                        let visibleKeys = k[0..., 0..., ..<segment.range.upperBound]
-                        let visibleValues = v[0..., 0..., ..<segment.range.upperBound]
-                        let mask: MLXFast.ScaledDotProductAttentionMaskMode
-                        if segment.isImage {
-                            mask = .none
-                        } else if segment.range.lowerBound == 0 {
-                            mask = .causal
-                        } else {
-                            // Text after an image: all earlier keys, then causal within the run.
-                            let rows = MLXArray(Int32(segment.range.lowerBound)..<Int32(segment.range.upperBound))
-                            let cols = MLXArray(Int32(0)..<Int32(segment.range.upperBound))
-                            mask = .array(
-                                (cols.expandedDimensions(axis: 0) .<= rows.expandedDimensions(axis: 1))
-                                    .reshaped(1, 1, segment.range.count, segment.range.upperBound))
-                        }
-                        return MLXFast.scaledDotProductAttention(
-                            queries: queries, keys: visibleKeys, values: visibleValues, scale: scale, mask: mask)
-                    }, axis: 2)
+            autoreleasepool {
+                let (q, k, v) = project(index, layerNorm(hidden) * (1 + mod.scale1), ropeTable)
+                keys.append(k)
+                values.append(v)
+                // The last block's prefix output feeds nothing downstream, only its K/V matter.
+                if index == blocks.count - 1 { return }
+                let attention: MLXArray
+                if segments.count == 1 {
+                    attention = MLXFast.scaledDotProductAttention(queries: q, keys: k, values: v, scale: scale, mask: .causal)
+                } else {
+                    attention = concatenated(
+                        segments.map { segment in
+                            let queries = q[0..., 0..., segment.range]
+                            let visibleKeys = k[0..., 0..., ..<segment.range.upperBound]
+                            let visibleValues = v[0..., 0..., ..<segment.range.upperBound]
+                            let mask: MLXFast.ScaledDotProductAttentionMaskMode
+                            if segment.isImage {
+                                mask = .none
+                            } else if segment.range.lowerBound == 0 {
+                                mask = .causal
+                            } else {
+                                // Text after an image: all earlier keys, then causal within the run.
+                                let rows = MLXArray(Int32(segment.range.lowerBound)..<Int32(segment.range.upperBound))
+                                let cols = MLXArray(Int32(0)..<Int32(segment.range.upperBound))
+                                mask = .array(
+                                    (cols.expandedDimensions(axis: 0) .<= rows.expandedDimensions(axis: 1))
+                                        .reshaped(1, 1, segment.range.count, segment.range.upperBound))
+                            }
+                            return MLXFast.scaledDotProductAttention(
+                                queries: queries, keys: visibleKeys, values: visibleValues, scale: scale, mask: mask)
+                        }, axis: 2)
+                }
+                hidden = hidden + mod.gate1 * attentionOut(index, merge(attention, length: length))
+                hidden = hidden + mod.gate2 * feedForward(index, layerNorm(hidden) * (1 + mod.scale2))
+                eval([hidden, k, v])
             }
-            hidden = hidden + mod.gate1 * attentionOut(index, merge(attention, length: length))
-            hidden = hidden + mod.gate2 * feedForward(index, layerNorm(hidden) * (1 + mod.scale2))
-            eval([hidden, k, v])
         }
         return TextCache(keys: keys, values: values, textLength: length)
     }
@@ -462,12 +467,16 @@ final class QwenImageTransformer: ParameterContainer {
         guard options.compiledStep else { return imageStep(inputs)[0] }
         if compiledImageStep == nil {
             // `compile` retraces by itself when input shapes change (resolution or prompt length).
-            compiledImageStep = compile { [unowned self] in self.imageStep($0) }
+            let state = parameters + loraGroups.sorted { $0.key < $1.key }.flatMap { $0.value.arrays }
+            compiledImageStep = compile(inputs: [state]) { [unowned self] in self.imageStep($0) }
         }
         return compiledImageStep!(inputs)[0]
     }
 
     private var compiledImageStep: (([MLXArray]) -> [MLXArray])?
+
+    /// Compiled graphs capture weight arrays; release them explicitly at the component boundary.
+    func discardCompiledStep() { compiledImageStep = nil }
 
     /// Same function as `callAsFunction`, evaluated eagerly (honours `blockTrace`).
     func uncompiled(latents: MLXArray, sigma: Float, cache: TextCache, rope: Rope) -> MLXArray {

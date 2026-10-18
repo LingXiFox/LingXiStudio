@@ -157,6 +157,7 @@ public struct GenerationProgress: Sendable {
     public var secondsPerStep: Double?
     public var elapsed: TimeInterval
     public var memory: MemoryStats
+    public var conditioningCacheHit = false
 }
 
 public struct StageTiming: Codable, Sendable {
@@ -177,6 +178,7 @@ public struct GeneratedImage: Sendable {
     public var totalSeconds: Double
     /// Wall time of every denoising step (transformer + Euler update, synchronized).
     public var stepSeconds: [Double]
+    public var conditioningCacheHit = false
 }
 
 public enum PipelineError: Error, CustomStringConvertible {
@@ -185,9 +187,11 @@ public enum PipelineError: Error, CustomStringConvertible {
     case emptyPrompt
     case scheduleSteps(SamplerSchedule, Int)
     case missingInput(String)
+    case modelChanged
 
     public var description: String {
         switch self {
+        case .modelChanged: "Model files changed during conditioning; retry after the update completes"
         case .missingInput(let what): "Missing input: \(what)"
         case .invalidSize(let w, let h): "Width and height must be positive multiples of 32 (got \(w)x\(h))"
         case .cancelled: "Generation cancelled"
@@ -199,12 +203,14 @@ public enum PipelineError: Error, CustomStringConvertible {
 
 /// Qwen-Image-2.1 text-to-image pipeline with staged component residency.
 ///
-/// Only one large component is resident at a time (text encoder ~16 GB, then transformer ~14 GB, then VAE),
-/// which keeps a BF16 run within a 32 GB unified-memory budget.
+/// Language layers stream one at a time; transformer and VAE residency remains staged.
+/// Only lossless CPU conditioning bytes are retained between requests.
 public final class QwenImagePipeline: @unchecked Sendable {
     public let model: ModelDirectory
-    let tokenizer: QwenTokenizer
-    private let scheduleConfig: FlowMatchSchedule.Config
+    private(set) var tokenizer: QwenTokenizer
+    private var scheduleConfig: FlowMatchSchedule.Config
+    private var conditioningRevision: Data
+    private var conditioningCache = TextConditionCache()
 
     static let systemPrompt = "Comprehend and analyze the provided prompt."
     static let systemPrefix = "<|im_start|>system\n\(systemPrompt)<|im_end|>\n"
@@ -213,6 +219,7 @@ public final class QwenImagePipeline: @unchecked Sendable {
         self.model = model
         tokenizer = try QwenTokenizer(directory: model.processor)
         scheduleConfig = try FlowMatchSchedule.Config(contentsOf: model.scheduler.appending(path: "scheduler_config.json"))
+        conditioningRevision = try TextConditionCache.modelRevision(model)
     }
 
     /// `VaeImageProcessor.postprocess`: `(x / 2 + 0.5).clamp(0, 1)`, then `round(x * 255)` to uint8.
@@ -240,6 +247,7 @@ public final class QwenImagePipeline: @unchecked Sendable {
     public func generate(
         _ request: GenerationRequest,
         inputs: GenerationInputs = .none,
+        useEmbeddingCache: Bool = true,
         progress: @escaping (GenerationProgress) -> Void = { _ in },
         isCancelled: @escaping () -> Bool = { false }
     ) throws -> GeneratedImage {
@@ -249,10 +257,19 @@ public final class QwenImagePipeline: @unchecked Sendable {
         if request.scheduler == .viggleTurbo, request.steps != FlowMatchSchedule.viggleTurboNodes.count {
             throw PipelineError.scheduleSteps(.viggleTurbo, FlowMatchSchedule.viggleTurboNodes.count)
         }
-        let plan = try ModePlan(request: request, inputs: inputs)
         let start = Date()
+        let plan = try ModePlan(request: request, inputs: inputs)
+        let revision = try TextConditionCache.modelRevision(model)
+        if revision != conditioningRevision {
+            tokenizer = try QwenTokenizer(directory: model.processor)
+            scheduleConfig = try FlowMatchSchedule.Config(contentsOf: model.scheduler.appending(path: "scheduler_config.json"))
+            conditioningRevision = revision
+            conditioningCache.clear()
+        }
+        let cacheKey = TextConditionCache.key(revision: revision, request: request, conditions: plan.conditions)
+        var cacheHit = false
         var timings: [StageTiming] = []
-        var stageStart = Date()
+        var stageStart = start
         Memory.peakMemory = 0
         let sampler = FootprintSampler()
         sampler.start()
@@ -273,7 +290,7 @@ public final class QwenImagePipeline: @unchecked Sendable {
                 GenerationProgress(
                     stage: stage, fraction: fraction, step: step, totalSteps: stepsToRun,
                     secondsPerStep: secondsPerStep, elapsed: Date().timeIntervalSince(start),
-                    memory: .current()))
+                    memory: .current(), conditioningCacheHit: cacheHit))
         }
         func finish(_ stage: GenerationStage) {
             timings.append(
@@ -288,10 +305,6 @@ public final class QwenImagePipeline: @unchecked Sendable {
         // 1. Prompt encoding (with the vision tower for condition images). Released before the transformer loads.
         report(.validating, 0)
         let conditionSizes = plan.conditions.map { ($0.width, $0.height) }
-        struct Encoded {
-            let embedding: MLXArray
-            let imageRanges: [Range<Int>]
-        }
         var prompts: [(ids: [Int], drop: Int, ranges: [Range<Int>], positions: [[Int32]]?)] = []
         for text in [request.prompt] + (request.usesTrueCFG ? [request.negativePrompt ?? ""] : []) {
             if plan.conditions.isEmpty {
@@ -304,59 +317,70 @@ public final class QwenImagePipeline: @unchecked Sendable {
         }
         finish(.validating)
 
-        report(.loadingTextEncoder, 0)
-        var encoded: [Encoded] = []
-        // Each stage runs in its own autorelease pool: Metal command buffers are autoreleased and keep the buffers
-        // they used alive, and a thread without a run loop would otherwise hold them until the whole run ends.
-        try autoreleasepool {
-            let store = try WeightStore(directory: model.textEncoder, component: "text_encoder")
-            var vision: [QwenVisionEncoder.Output] = []
-            if !plan.conditions.isEmpty {
-                try autoreleasepool {
-                    let tower = try QwenVisionEncoder(store: store)
-                    try tower.materialize(checkCancelled: checkCancelled)
-                    for image in plan.conditions {
-                        try checkCancelled()
-                        let out = tower.encode(image)
-                        eval([out.embeds] + out.deepstack)
-                        vision.append(out)
-                    }
-                }
-                releaseStageMemory()
-            }
-            let encoder = try QwenTextEncoder(store: store)
-            try encoder.materialize(checkCancelled: checkCancelled) { report(.loadingTextEncoder, $0) }
-            finish(.loadingTextEncoder)
+        var encoded: [TextConditionCache.Encoded] = []
+        if useEmbeddingCache, let cached = conditioningCache.lookup(cacheKey) {
             try checkCancelled()
-
-            report(.encodingPrompt, 0)
-            let visionInput: (([[Int32]], [Range<Int>]) -> QwenTextEncoder.VisionInput)? =
-                vision.isEmpty
-                ? nil
-                : { positions, ranges in
-                    QwenTextEncoder.VisionInput(
-                        embeds: concatenated(vision.map(\.embeds), axis: 0),
-                        deepstack: (0..<vision[0].deepstack.count).map { i in
-                            concatenated(vision.map { $0.deepstack[i] }, axis: 0)
-                        },
-                        ranges: ranges, positions: positions)
+            cacheHit = true
+            encoded = cached
+            report(.encodingPrompt, 1)
+            finish(.encodingPrompt)
+        } else {
+            report(.loadingTextEncoder, 0)
+            // Each stage runs in its own autorelease pool: Metal command buffers are autoreleased and keep the buffers
+            // they used alive, and a thread without a run loop would otherwise hold them until the whole run ends.
+            try autoreleasepool {
+                var vision: [QwenVisionEncoder.Output] = []
+                if !plan.conditions.isEmpty {
+                    try autoreleasepool {
+                        let tower = try QwenVisionEncoder(store: WeightStore(directory: model.textEncoder, component: "text_encoder"))
+                        try tower.materialize(checkCancelled: checkCancelled)
+                        for image in plan.conditions {
+                            try checkCancelled()
+                            let out = tower.encode(image)
+                            eval([out.embeds] + out.deepstack)
+                            vision.append(out)
+                        }
+                    }
+                    releaseStageMemory()
                 }
-            for prompt in prompts {
+                finish(.loadingTextEncoder)
                 try checkCancelled()
-                let hidden = try encoder(
-                    prompt.ids, vision: prompt.positions.flatMap { p in visionInput?(p, prompt.ranges) },
-                    checkCancelled: checkCancelled)
-                let embedding = hidden[0..., prompt.drop...]
-                eval(embedding)
-                encoded.append(
-                    Encoded(
-                        embedding: embedding,
-                        imageRanges: prompt.ranges.map { ($0.lowerBound - prompt.drop)..<($0.upperBound - prompt.drop) }))
+
+                report(.encodingPrompt, 0)
+                let visionInput: (([[Int32]], [Range<Int>]) -> QwenTextEncoder.VisionInput)? =
+                    vision.isEmpty
+                    ? nil
+                    : { positions, ranges in
+                        QwenTextEncoder.VisionInput(
+                            embeds: concatenated(vision.map(\.embeds), axis: 0),
+                            deepstack: (0..<vision[0].deepstack.count).map { i in
+                                concatenated(vision.map { $0.deepstack[i] }, axis: 0)
+                            },
+                            ranges: ranges, positions: positions)
+                    }
+                let hiddenStates = try QwenTextEncoder.encodeStreaming(
+                    directory: model.textEncoder,
+                    prompts: prompts.map { prompt in
+                        (ids: prompt.ids, vision: prompt.positions.flatMap { visionInput?($0, prompt.ranges) })
+                    }, checkCancelled: checkCancelled, progress: { report(.encodingPrompt, $0) })
+                for (prompt, hidden) in zip(prompts, hiddenStates) {
+                    try checkCancelled()
+                    let embedding = hidden[0..., prompt.drop...]
+                    eval(embedding)
+                    encoded.append(
+                        TextConditionCache.Encoded(
+                            embedding: embedding,
+                            imageRanges: prompt.ranges.map { ($0.lowerBound - prompt.drop)..<($0.upperBound - prompt.drop) }))
+                }
+            }
+            releaseStageMemory()
+            finish(.encodingPrompt)
+            try checkCancelled()
+            guard revision == (try TextConditionCache.modelRevision(model)) else { throw PipelineError.modelChanged }
+            if useEmbeddingCache {
+                conditioningCache.store(encoded, key: cacheKey)
             }
         }
-        releaseStageMemory()
-        finish(.encodingPrompt)
-        try checkCancelled()
 
         // 2. VAE encoding of condition images and of the initial image.
         var conditionLatents: [QwenImageTransformer.ConditionImage] = []
@@ -395,9 +419,11 @@ public final class QwenImagePipeline: @unchecked Sendable {
         if let initialLatents, startIndex > 0 {
             latents = Self.scaleNoise(initialLatents, sigma: schedule.sigmas[startIndex], noise: noise)
         }
-        try autoreleasepool {
+        // Keep Swift parameter lifetimes inside a separate frame as well as draining Metal autoreleases.
+        @inline(never) func runTransformer() throws {
             let transformer = try QwenImageTransformer(
                 store: WeightStore(directory: model.transformer, component: "transformer"))
+            defer { transformer.discardCompiledStep() }
             try transformer.materialize(checkCancelled: checkCancelled) { report(.loadingTransformer, $0) }
             // LoRA factors stay separate from the base weights and are applied on the fly.
             let loras = LoRAStack()
@@ -426,6 +452,7 @@ public final class QwenImagePipeline: @unchecked Sendable {
             conditionLatents.removeAll()
             finish(.prefill)
 
+            report(.denoising, 0)
             for step in startIndex..<schedule.steps {
                 try checkCancelled()
                 let stepStart = Date()
@@ -452,7 +479,10 @@ public final class QwenImagePipeline: @unchecked Sendable {
                     .denoising, Double(step - startIndex + 1) / Double(stepsToRun), step: step - startIndex + 1,
                     secondsPerStep: recent.reduce(0, +) / Double(recent.count))
             }
+            // An evaluated output may still share compiled graph state; cross the stage boundary with exact bytes.
+            latents = MLXArray(data: latents.asData(access: .copy))
         }
+        try autoreleasepool { try runTransformer() }
         releaseStageMemory()
         finish(.denoising)
         try checkCancelled()
@@ -484,7 +514,8 @@ public final class QwenImagePipeline: @unchecked Sendable {
 
         return GeneratedImage(
             width: request.width, height: request.height, rgba: rgba, request: request, timings: timings,
-            peakMemoryBytes: Memory.peakMemory, totalSeconds: Date().timeIntervalSince(start), stepSeconds: stepTimes)
+            peakMemoryBytes: Memory.peakMemory, totalSeconds: Date().timeIntervalSince(start), stepSeconds: stepTimes,
+            conditioningCacheHit: cacheHit)
     }
 
     /// Flow-matching forward noising (`FlowMatchEulerDiscreteScheduler.scale_noise`): `sigma * noise + (1 - sigma) * x`.

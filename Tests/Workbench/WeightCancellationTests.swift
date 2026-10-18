@@ -70,5 +70,20 @@ final class WeightCancellationTests: XCTestCase {
         }
         XCTAssertEqual(checks, 2)
         XCTAssertEqual(try encoder([0]).asArray(Float.self), [1, 1, 1, 1])
+        let streamed = try QwenTextEncoder.encodeStreaming(directory: directory,
+            prompts: [([0], nil), ([1, 0], nil)], config: config)
+        XCTAssertEqual(streamed[0].asData(access: .copy).data, try encoder([0]).asData(access: .copy).data)
+        XCTAssertEqual(streamed[1].asData(access: .copy).data, try encoder([1, 0]).asData(access: .copy).data)
+        let previousLimit = Memory.cacheLimit
+        var streamedChecks = 0
+        var completedLayers: [Double] = []
+        XCTAssertThrowsError(try QwenTextEncoder.encodeStreaming(directory: directory,
+            prompts: [([0], nil)], config: config, checkCancelled: {
+                streamedChecks += 1
+                if streamedChecks == 2 { throw PipelineError.cancelled }
+            }, progress: { completedLayers.append($0) }))
+        XCTAssertEqual(streamedChecks, 2)
+        XCTAssertEqual(completedLayers, [0.5])
+        XCTAssertEqual(Memory.cacheLimit, previousLimit)
     }
 }

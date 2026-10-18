@@ -51,7 +51,7 @@ final class GenerationEngine: @unchecked Sendable {
         condition.unlock()
     }
 
-    /// Drops the cached tokenizer/scheduler state of a model (weights are never kept between tasks).
+    /// Drops the model's tokenizer, scheduler and lossless CPU conditioning cache; weights are not retained.
     func forget(model root: URL) {
         condition.lock()
         pipelines[root] = nil
@@ -85,7 +85,8 @@ final class GenerationEngine: @unchecked Sendable {
         condition.unlock()
         let pipeline = try cached ?? QwenImagePipeline(model: model)
         condition.lock()
-        pipelines[job.modelRoot] = pipeline
+        // Keep only one model's tokenizer and bounded CPU conditioning cache.
+        pipelines = [job.modelRoot: pipeline]
         condition.unlock()
         try FileManager.default.createDirectory(at: job.outputDirectory, withIntermediateDirectories: true)
         // Input images are copied next to the results (`inputs/<sha256>.png`) and the record points there, so an

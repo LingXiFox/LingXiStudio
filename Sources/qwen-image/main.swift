@@ -12,6 +12,7 @@ let usage = """
       qwen-image tokenize --text <text> [--model <dir>]
       qwen-image schedule --steps <n> [--width W --height H]
       qwen-image debug-text --prompt <text> --out <file.safetensors>
+      qwen-image bench-text --prompt <text> [--batch <4|8|16>] [--streamed 1] --out <file.safetensors>
       qwen-image debug-transformer --in <file> --sigma <s> --width W --height H --out <file>
       qwen-image debug-vae --in <file> --width W --height H --out <file>
 
@@ -31,6 +32,7 @@ let usage = """
       --mask <file>            Inpaint mask, white = repaint (--invert 1, --feather <px>, --keep-unmasked 0)
       --strength <0..1>        Share of the schedule run from the noised start image (default 1)
       --thermal-samples 1     Four thermal/throughput probes in a 6-step benchmark (outside step timing)
+      --embedding-cache 0     Disable lossless text-conditioning reuse (enabled by default)
     """
 
 struct Arguments {
@@ -131,6 +133,9 @@ let model = ModelDirectory(
     root: args.url("model") ?? FileManager.default.homeDirectoryForCurrentUser.appending(path: "Models/Qwen-Image-2.1-BF16"))
 
 do {
+    if ["generate", "bench-text", "bench-transformer"].contains(args.command) {
+        print("runtime Metal=\(ProcessInfo.processInfo.environment["MLX_MAX_OPS_PER_BUFFER"] ?? "unset")ops/\(ProcessInfo.processInfo.environment["MLX_MAX_MB_PER_BUFFER"] ?? "unset")MB TF32=\(ProcessInfo.processInfo.environment["MLX_ENABLE_TF32"] ?? "unset")")
+    }
     switch args.command {
     case "generate":
         let components = try model.validate()
@@ -144,7 +149,7 @@ do {
         let pipeline = try QwenImagePipeline(model: model)
         var lastStage: GenerationStage?
         let sampleThermals = args.string("thermal-samples") == "1" && request.steps == 6
-        let image = try pipeline.generate(request, inputs: inputs) { p in
+        let image = try pipeline.generate(request, inputs: inputs, useEmbeddingCache: args.string("embedding-cache") != "0") { p in
             if sampleThermals && ((p.stage == .prefill && p.fraction == 0)
                 || (p.stage == .denoising && [2, 4, 6].contains(p.step))) {
                 // Probe between timed steps; its small extra GPU load is included in total run time.
@@ -207,6 +212,18 @@ do {
 
     case "debug-text":
         try Diagnostics.dumpTextEncoder(model: model, prompt: args.require("prompt"), to: args.url("out")!)
+
+    case "bench-text":
+        let result = try Diagnostics.benchTextEncoder(
+            model: model, prompt: args.require("prompt"), batch: args.int("batch", 16), streamed: args.string("streamed") == "1",
+            to: URL(fileURLWithPath: args.require("out")))
+        if args.string("streamed") == "1" {
+            print(String(format: "streamed total %.6f footprint %lld mlxPeak %lld", result.encoding,
+                Int64(result.footprint), Int64(result.mlxPeak)))
+        } else {
+            print(String(format: "batch %d loading %.6f encoding %.6f footprint %lld mlxPeak %lld",
+                args.int("batch", 16), result.loading, result.encoding, Int64(result.footprint), Int64(result.mlxPeak)))
+        }
 
     case "debug-text-image":
         try Diagnostics.dumpTextImage(

@@ -2,12 +2,14 @@ import Foundation
 import MLX
 
 public enum WeightError: Error, CustomStringConvertible {
+    case invalidBatch(Int)
     case missingDirectory(String)
     case missingTensor(String, component: String)
     case shapeMismatch(String, expected: [Int], actual: [Int])
 
     public var description: String {
         switch self {
+        case .invalidBatch(let batch): "Loading batch must be 4, 8 or 16 (got \(batch))"
         case .missingDirectory(let path): "Model component directory not found: \(path)"
         case .missingTensor(let key, let component): "Tensor \(key) missing in \(component)"
         case .shapeMismatch(let key, let expected, let actual):
@@ -50,6 +52,13 @@ struct WeightStore {
             throw WeightError.shapeMismatch(key, expected: shape, actual: value.shape)
         }
         if let dtype, value.dtype != dtype { value = value.asType(dtype) }
+        return value
+    }
+
+    /// Transfer ownership so a streamed layer is freed after use rather than retained by the source dictionary.
+    mutating func take(_ key: String, shape: [Int]? = nil) throws -> MLXArray {
+        let value = try get(key, shape: shape)
+        tensors[key] = nil
         return value
     }
 }

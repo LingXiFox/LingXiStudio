@@ -59,8 +59,10 @@ open dist/LingXiStudio.app
 - 作品适配/100%/缩放/平移、独立查看器、复制与另存为、PNG/JPEG/TIFF 导出及移至废纸篓。
 - 暖奶白/暖炭黑主题、点击空白取消输入焦点、自定义键盘焦点指示、提示词与生成预设。
 
-**尚未实现**：文本编码器自适应量化、模型量化配置、步缓存和自动语义蒙版。性能与内存问题仍在排查，不能保证所有内存压力下均无卡顿。
-本次按用户要求暂停量化和性能修改；DiT 仍使用 BF16，视觉塔和 VAE 使用真正的 FP32，未降低模型精度。
+文本条件采用全精度逐层加载，并保留最近一组条件的无损 CPU Embedding 缓存（最多 128 MiB）。同一模型、提示词、参考图和文本计算配置下，只修改 Seed 会复用条件，跳过视觉/文本编码器。缓存不跨 App 重启；超限时重新计算。
+缓存校验准备后的参考图实际像素与顺序、提示词、CFG 分支、模型文件身份及配置内容，不依赖输入路径或历史哈希。模型权重被替换或修改时失效；生成期间模型变化会报错。详见[加载、缓存与性能实测](docs/conditioning-performance.md)。
+
+**尚未实现**：自适应量化、模型量化配置、去噪步缓存和自动语义蒙版。DiT 仍使用 BF16，视觉塔和 VAE 使用真正的 FP32；本次没有降低精度、减少步数或采用有损缓存。系统整体内存压力仍可能影响响应。
 
 ## CLI
 
@@ -88,16 +90,17 @@ bin_dir="$(swift build -c release --show-bin-path)"
 
 ```bash
 mkdir -p .tmp
-swift test -c release --parallel --num-workers 2 --xunit-output .tmp/tests.xml
+swift test -c release --parallel --num-workers 2 --skip HardwareConditioningTests --xunit-output .tmp/tests.xml
 ```
 
-当前 XCTest 有 11 项，覆盖蒙版换图清理、输出元数据、点击空白提交字段、权重加载取消和文本编码层间取消。
+常规 XCTest 有 16 项，覆盖蒙版、输出元数据、点击空白、加载/层间取消、逐层编码字节对齐及缓存失效。另有 2 项显式启用的真实模型测试；它们串行等待温控门限，分别验证纯文本和参考图缓存的完整 6 步结果，不能用默认跳过代替通过。启用命令见[实测报告](docs/conditioning-performance.md)。
 [分阶段数值对齐脚本](Tests/Parity/run.sh) 是开发用工具，需要单独准备 Python/PyTorch 参考环境；正常推理不需要这些依赖。
 
 | 证据 | 已验证范围 |
 |---|---|
 | [工作台验收](docs/workbench-acceptance.md) | 五种模式、CLI/手动 App 测试及四点温控记录 |
 | [GUI 验收](docs/gui-design-acceptance.md) | 界面交互、原生图标、取消和后续调整；明确列出尚未实测的项 |
+| [加载与条件缓存](docs/conditioning-performance.md) | Batch 4/8/16、全精度逐层加载、缓存逐字节对齐及 Metal 轨迹 |
 | [UI 性能排查](docs/ui-performance-investigation.md) | 空闲采样、窗口共享干扰、真实生成采样与内存压力观察 |
 | [数值对齐](docs/phase-1.5-report.md) | 28 项分阶段对齐检查、LoRA 与官方实现比较 |
 | [性能对齐](docs/performance-alignment.md) | 早期同配置性能对照，保留测试上下文 |
@@ -105,9 +108,11 @@ swift test -c release --parallel --num-workers 2 --xunit-output .tmp/tests.xml
 此前手动启动 App 的 1024² / BF16 / Turbo 6 步 / 动态 LoRA 测得稳态 **6.053 s/step**；
 两次温控 CLI 测得 6.035 / 6.016 s/step，四点吞吐下降约 3–4%。这些是特定设备与配置下的历史结果，
 不代表最新 UI 修订重新通过了测速。窗口共享采集会干扰 GPU 与 WindowServer 负载，相关结果单独记录。
+最新全精度逐层加载构建的同配置完整回归为 **5.978 s/step**（稳态 2–6 步），四点吞吐从 13.179 到 12.890 TFLOPS，有约 2.2% 下降；输出像素与 `0ca7773` 一致。详细条件、失败回归与修复证据见[实测报告](docs/conditioning-performance.md)。
+最终参考图手动验收未观察到卡顿；同配置 GUI、CLI 和此前版本共五张输出的解码像素完全一致。参考图仍约 7 s/step，尚未达到 5–6 s/step。
 目标仍是未降频时 5–6 s/step；长任务、参考图数量、内存压力与无风扇机型的温控都会影响速度。
 
-运行时分阶段加载并释放组件，每阶段结束清理 MLX 缓冲缓存：文本编码器约 16 GB、BF16 DiT 约 14 GB、FP32 VAE 解码器约 1.3 GB。
+运行时分阶段加载并释放组件，每阶段结束清理 MLX 缓冲缓存。文本编码器权重文件约 16 GB，逐层加载的纯文本实测进程峰值约 1.8 GB；参考图还需要视觉编码和更长的激活。BF16 DiT 权重约 14 GB、FP32 VAE 解码器约 1.3 GB。
 峰值还包括激活、LoRA、条件图与系统内存，不能把权重文件大小当成实际峰值。
 
 ## 源码结构

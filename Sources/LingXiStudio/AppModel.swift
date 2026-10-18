@@ -143,6 +143,7 @@ final class AppModel {
             MainActor.assumeIsolated { self?.metrics = SystemMetrics.sample() }
         }
         AppLog.write("app started; model \(modelRoot?.path ?? "none")")
+        AppLog.write("runtime Metal=\(RuntimeOverrides.current("MLX_MAX_OPS_PER_BUFFER"))ops/\(RuntimeOverrides.current("MLX_MAX_MB_PER_BUFFER"))MB TF32=\(RuntimeOverrides.current("MLX_ENABLE_TF32"))")
     }
 
     func applyAppearance() {
@@ -473,13 +474,13 @@ final class AppModel {
             lastSeed = seed
         case .progress(let imageIndex, let p):
             if live?.stage != p.stage {
-                AppLog.write("task \(taskID) image \(imageIndex) stage=\(p.stage.rawValue) elapsed=\(p.elapsed)")
+                AppLog.write("task \(taskID) image \(imageIndex) stage=\(p.stage.rawValue) elapsed=\(p.elapsed) conditioningCacheHit=\(p.conditioningCacheHit)")
             }
             live = LiveProgress(
                 taskID: taskID, imageIndex: imageIndex, imageCount: imageCount, stage: p.stage, fraction: p.fraction,
                 step: p.step, totalSteps: p.totalSteps, secondsPerStep: p.secondsPerStep, elapsed: p.elapsed,
-                mlxActive: p.memory.activeBytes, mlxPeak: p.memory.peakBytes)
-            updateResidency(p.stage)
+                mlxActive: p.memory.activeBytes, mlxPeak: p.memory.peakBytes, conditioningCacheHit: p.conditioningCacheHit)
+            updateResidency(p.stage, conditioningCacheHit: p.conditioningCacheHit)
         case .saved(_, let url, let seconds, let stepSeconds):
             tasks[index].outputs.append(url.path)
             tasks[index].log.append("已保存 \(url.lastPathComponent)（\(Format.duration(seconds))）")
@@ -530,19 +531,19 @@ final class AppModel {
     }
 
     /// The balanced profile keeps one large component resident at a time.
-    private func updateResidency(_ stage: GenerationStage) {
+    private func updateResidency(_ stage: GenerationStage, conditioningCacheHit: Bool) {
         func set(_ name: String, _ state: ComponentResidency) {
             if residency[name] != state { residency[name] = state }
         }
         switch stage {
         case .validating: break
         case .loadingTextEncoder: set("text_encoder", .loading)
-        case .encodingPrompt: set("text_encoder", .resident)
+        case .encodingPrompt: if !conditioningCacheHit { set("text_encoder", .resident) }
         case .encodingImages:
-            set("text_encoder", .released)
+            if !conditioningCacheHit { set("text_encoder", .released) }
             set("vae", .resident)
         case .loadingTransformer:
-            set("text_encoder", .released)
+            if !conditioningCacheHit { set("text_encoder", .released) }
             if residency["vae"] == .resident { set("vae", .released) }
             set("transformer", .loading)
         case .prefill, .denoising: set("transformer", .resident)

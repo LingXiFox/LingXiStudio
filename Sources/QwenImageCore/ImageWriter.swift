@@ -24,6 +24,7 @@ public struct GenerationMetadata: Codable, Sendable {
     public var totalSeconds: Double
     public var peakMemoryBytes: Int
     public var createdAt: Date
+    public var conditioningCacheHit: Bool?
 }
 
 extension GenerationMetadata {
@@ -41,7 +42,7 @@ public enum ImageWriter {
     public static func write(_ image: GeneratedImage, model: String, to url: URL) throws {
         let metadata = GenerationMetadata(
             model: model, mode: image.request.mode.rawValue, request: image.request, timings: image.timings, stepSeconds: image.stepSeconds, totalSeconds: image.totalSeconds,
-            peakMemoryBytes: image.peakMemoryBytes, createdAt: Date())
+            peakMemoryBytes: image.peakMemoryBytes, createdAt: Date(), conditioningCacheHit: image.conditioningCacheHit)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
