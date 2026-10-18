@@ -22,22 +22,155 @@ public enum Diagnostics {
             ], url: url)
     }
 
-    /// One transformer evaluation on given inputs. Reads `embeds` [1,T,4096] and `latents` [1,N,64] from `input`.
-    public static func dumpTransformer(
-        model: ModelDirectory, input: URL, sigma: Float, latentHeight: Int, latentWidth: Int, to url: URL
-    ) throws {
-        let arrays = try loadArrays(url: input)
-        guard let embeds = arrays["embeds"], let latents = arrays["latents"] else {
-            throw WeightError.missingTensor("embeds/latents", component: input.path)
-        }
+    private static func loadTransformer(_ model: ModelDirectory, loras: [LoRASpec]) throws -> (
+        QwenImageTransformer, LoRAStack
+    ) {
         let transformer = try QwenImageTransformer(
             store: WeightStore(directory: model.transformer, component: "transformer"))
-        let rope = transformer.rope(textLength: embeds.dim(1), latentHeight: latentHeight, latentWidth: latentWidth)
-        let cache = transformer.prefill(text: embeds.asType(.bfloat16), rope: rope.text)
-        let out = transformer(latents: latents.asType(.bfloat16), sigma: sigma, cache: cache, rope: rope.image)
+        transformer.materialize()
+        let stack = LoRAStack()
+        for spec in loras { try stack.load(spec) }
+        try transformer.bind(stack)
+        return (transformer, stack)
+    }
+
+    private static func inputs(_ url: URL, _ names: [String]) throws -> [MLXArray] {
+        let arrays = try loadArrays(url: url)
+        return try names.map { name in
+            guard let value = arrays[name] else { throw WeightError.missingTensor(name, component: url.path) }
+            return value
+        }
+    }
+
+    /// Conditioning stage: timestep embedding rows `[t, 0]`, shared modulation, and the projected text stream.
+    public static func dumpConditioning(
+        model: ModelDirectory, input: URL, sigma: Float, loras: [LoRASpec], to url: URL
+    ) throws {
+        let embeds = try inputs(input, ["embeds"])[0].asType(.bfloat16)
+        let (transformer, _) = try loadTransformer(model, loras: loras)
+        let temb = transformer.timeEmbedding(sigma: sigma)
         try save(
-            arrays: ["velocity": out.asType(.float32), "temb": transformer.timeEmbedding(sigma: sigma).asType(.float32)],
-            url: url)
+            arrays: [
+                "temb": temb.asType(.float32),
+                "modulation": transformer.modulationParameters(temb).asType(.float32),
+                "txt": transformer.textProjection(embeds).asType(.float32),
+            ], url: url)
+    }
+
+    /// One transformer evaluation. Reads `embeds` [1,T,4096] and `latents` [1,N,64] from `input`; with `trace`
+    /// it runs uncompiled and also dumps the image-token hidden state after every block.
+    public static func dumpTransformer(
+        model: ModelDirectory, input: URL, sigmas: [Float], latentHeight: Int, latentWidth: Int,
+        loras: [LoRASpec] = [], trace: Bool = false, to url: URL
+    ) throws {
+        let values = try inputs(input, ["embeds", "latents"])
+        let (embeds, latents) = (values[0].asType(.bfloat16), values[1].asType(.bfloat16))
+        let (transformer, _) = try loadTransformer(model, loras: loras)
+        let rope = transformer.rope(textLength: embeds.dim(1), latentHeight: latentHeight, latentWidth: latentWidth)
+        let cache = transformer.prefill(text: embeds, rope: rope.text)
+        var dumped: [String: MLXArray] = [:]
+        for (i, sigma) in sigmas.enumerated() {
+            if trace {
+                transformer.blockTrace = { index, hidden in
+                    eval(hidden)
+                    dumped["block\(index).s\(i)"] = hidden.asType(.float32)
+                }
+            }
+            let out = trace
+                ? transformer.uncompiled(latents: latents, sigma: sigma, cache: cache, rope: rope.image)
+                : transformer(latents: latents, sigma: sigma, cache: cache, rope: rope.image)
+            dumped["velocity.s\(i)"] = out.asType(.float32)
+            eval(Array(dumped.values))
+        }
+        try save(arrays: dumped, url: url)
+    }
+
+    /// Several denoising steps from a given initial noise, recording the latents after every step.
+    public static func dumpDenoise(
+        model: ModelDirectory, input: URL, request: GenerationRequest, to url: URL
+    ) throws {
+        let values = try inputs(input, ["embeds", "noise"])
+        let embeds = values[0].asType(.bfloat16)
+        var latents = values[1].asType(.bfloat16)
+        let (lh, lw) = (request.height / 16, request.width / 16)
+        let pipeline = try QwenImagePipeline(model: model)
+        let schedule = pipeline.schedule(for: request, imageTokens: lh * lw)
+        let (transformer, _) = try loadTransformer(model, loras: request.loras)
+        let rope = transformer.rope(textLength: embeds.dim(1), latentHeight: lh, latentWidth: lw)
+        let cache = transformer.prefill(text: embeds, rope: rope.text)
+        var dumped: [String: MLXArray] = ["sigmas": MLXArray(schedule.sigmas)]
+        for step in 0..<schedule.steps {
+            let velocity = transformer(latents: latents, sigma: schedule.sigmas[step], cache: cache, rope: rope.image)
+            latents = schedule.step(latents: latents, velocity: velocity, index: step)
+            eval(latents)
+            dumped["latents.\(step)"] = latents.asType(.float32)
+        }
+        try save(arrays: dumped, url: url)
+    }
+
+    /// Euler update on given `latents`/`velocity` (bf16) at every schedule index, plus the schedule itself.
+    public static func dumpEuler(model: ModelDirectory, input: URL, request: GenerationRequest, to url: URL) throws {
+        let values = try inputs(input, ["latents", "velocity"])
+        let pipeline = try QwenImagePipeline(model: model)
+        let schedule = pipeline.schedule(for: request, imageTokens: values[0].dim(1))
+        var dumped: [String: MLXArray] = ["sigmas": MLXArray(schedule.sigmas)]
+        for index in 0..<schedule.steps {
+            dumped["next.\(index)"] = schedule
+                .step(latents: values[0].asType(.bfloat16), velocity: values[1].asType(.bfloat16), index: index)
+                .asType(.float32)
+        }
+        try save(arrays: dumped, url: url)
+    }
+
+    /// Image postprocessing of a float image `[1,H,W,C]` in [-1, 1] to 8-bit.
+    public static func dumpPostprocess(input: URL, to url: URL) throws {
+        let image = try inputs(input, ["image"])[0]
+        try save(arrays: ["pixels": QwenImagePipeline.toRGBA8(image).asType(.int32)], url: url)
+    }
+
+    /// LoRA lifecycle on one transformer: base -> load -> disable -> enable -> rescale -> duplicate -> unload.
+    /// Returns a report of output differences that must be exactly zero or within float tolerance.
+    public static func checkLoRALifecycle(
+        model: ModelDirectory, input: URL, lora: String, sigma: Float, latentHeight: Int, latentWidth: Int
+    ) throws -> [String] {
+        let values = try inputs(input, ["embeds", "latents"])
+        let (embeds, latents) = (values[0].asType(.bfloat16), values[1].asType(.bfloat16))
+        let (transformer, stack) = try loadTransformer(model, loras: [])
+        let checksum = { () -> [Float] in
+            transformer.parameters.map { sum($0.asType(.float32)).item(Float.self) }
+        }
+        let weightsBefore = checksum()
+        let rope = transformer.rope(textLength: embeds.dim(1), latentHeight: latentHeight, latentWidth: latentWidth)
+        func run() throws -> MLXArray {
+            try transformer.bind(stack)
+            let cache = transformer.prefill(text: embeds, rope: rope.text)
+            let out = transformer(latents: latents, sigma: sigma, cache: cache, rope: rope.image).asType(.float32)
+            eval(out)
+            return out
+        }
+        func rel(_ a: MLXArray, _ b: MLXArray) -> Float {
+            (sqrt(sum(square(a - b))) / sqrt(sum(square(b)))).item(Float.self)
+        }
+        var lines: [String] = []
+        let base = try run()
+        let id = try stack.load(LoRASpec(path: lora, scale: 1))
+        let withLoRA = try run()
+        lines.append(String(format: "loaded (scale 1) vs base: rel-L2 %.4f (must be > 0)", rel(withLoRA, base)))
+        try stack.setEnabled(id, false)
+        lines.append(String(format: "disabled vs base: rel-L2 %.3g (must be 0)", rel(try run(), base)))
+        try stack.setEnabled(id, true)
+        lines.append(String(format: "re-enabled vs loaded: rel-L2 %.3g (must be 0)", rel(try run(), withLoRA)))
+        try stack.setScale(id, 0)
+        lines.append(String(format: "scale 0 vs base: rel-L2 %.3g (must be 0)", rel(try run(), base)))
+        try stack.setScale(id, 0.5)
+        let second = try stack.load(LoRASpec(path: lora, scale: 0.5))
+        lines.append(String(format: "two adapters at 0.5 vs one at 1.0: rel-L2 %.4f (float level)", rel(try run(), withLoRA)))
+        try stack.unload(second)
+        try stack.unload(id)
+        lines.append(String(format: "unloaded vs base: rel-L2 %.3g (must be 0)", rel(try run(), base)))
+        let weightsAfter = checksum()
+        lines.append("base weight checksums unchanged: \(weightsBefore == weightsAfter) (\(weightsBefore.count) tensors)")
+        return lines
     }
 
     /// VAE decode of `latents` [1,N,64] (normalized, packed) read from `input`.
@@ -66,9 +199,11 @@ public enum Diagnostics {
 }
 
 extension Diagnostics {
-    /// Checks the fused Q/K RMSNorm + RoPE kernel against the same math composed from MLX ops in fp32.
+    /// Checks the fused Q/K RMSNorm + RoPE kernel against the reference's composed ops (same rounding points).
     /// Returns the max absolute difference and the max difference measured in bf16 ulps of the reference.
-    public static func checkFusedQKNormRope(length: Int = 300, heads: Int = 32, headDim: Int = 128) -> (Float, Float) {
+    public static func checkFusedQKNormRope(length: Int = 300, heads: Int = 32, headDim: Int = 128) -> (
+        Float, Float, Float
+    ) {
         let key = MLXRandom.key(7)
         let keys = MLXRandom.split(key: key, into: 4)
         let q = (MLXRandom.normal([1, length, heads, headDim], key: keys[0]) * 3).asType(.bfloat16)
@@ -80,23 +215,94 @@ extension Diagnostics {
 
         func reference(_ x: MLXArray, _ w: MLXArray) -> MLXArray {
             let xf = x.asType(.float32)
-            let n = xf * rsqrt(mean(xf * xf, axis: -1, keepDims: true) + 1e-6) * w.asType(.float32)
-            let pairs = n.reshaped(1, length, heads, headDim / 2, 2)
+            let normed = (xf * rsqrt(mean(xf * xf, axis: -1, keepDims: true) + 1e-6)).asType(.bfloat16) * w
+            let pairs = normed.asType(.float32).reshaped(1, length, heads, headDim / 2, 2)
             let (re, im) = (pairs[.ellipsis, 0], pairs[.ellipsis, 1])
             let c = cos[.newAxis, 0..., .newAxis, 0...]
             let s = sin[.newAxis, 0..., .newAxis, 0...]
-            return stacked([re * c - im * s, re * s + im * c], axis: -1).reshaped(x.shape)
+            return stacked([re * c - im * s, re * s + im * c], axis: -1).reshaped(x.shape).asType(.bfloat16)
         }
         let (fq, fk) = FusedKernels.qkNormRope(q: q, k: k, weightQ: wq, weightK: wk, cos: cos, sin: sin, eps: 1e-6)
         var maxAbs: Float = 0
         var maxUlp: Float = 0
+        var mismatches: Float = 0
         for (fused, ref) in [(fq, reference(q, wq)), (fk, reference(k, wk))] {
-            let diff = abs(fused.asType(.float32) - ref)
+            let refF = ref.asType(.float32)
+            let diff = abs(fused.asType(.float32) - refF)
             // bf16 has 8 significand bits: one ulp at |x| is 2^(floor(log2|x|) - 7).
-            let ulp = MLX.pow(MLXArray(Float(2)), floor(log2(maximum(abs(ref), MLXArray(Float(1e-30))))) - 7)
+            let ulp = MLX.pow(MLXArray(Float(2)), floor(log2(maximum(abs(refF), MLXArray(Float(1e-30))))) - 7)
             maxAbs = max(maxAbs, diff.max().item(Float.self))
             maxUlp = max(maxUlp, (diff / ulp).max().item(Float.self))
+            mismatches += (diff .> 0).asType(.float32).mean().item(Float.self) / 2
         }
-        return (maxAbs, maxUlp)
+        return (maxAbs, maxUlp, mismatches)
+    }
+}
+
+extension Diagnostics {
+    public struct ThermalProbe: Sendable {
+        public var thermalState: String
+        /// Sustained BF16 matmul throughput of a short fixed workload; drops when the GPU is clock-limited.
+        public var tflops: Double
+    }
+
+    public static func thermalStateName(_ state: ProcessInfo.ThermalState = ProcessInfo.processInfo.thermalState)
+        -> String
+    {
+        switch state {
+        case .nominal: "nominal"
+        case .fair: "fair"
+        case .serious: "serious"
+        case .critical: "critical"
+        @unknown default: "unknown"
+        }
+    }
+
+    /// ~1 s of 4096³ BF16 matmuls, the same operation that dominates a denoising step.
+    public static func probeThermal(iterations: Int = 24) -> ThermalProbe {
+        let a = MLXRandom.normal([4096, 4096], key: MLXRandom.key(1)).asType(.bfloat16)
+        let b = MLXRandom.normal([4096, 4096], key: MLXRandom.key(2)).asType(.bfloat16)
+        eval(a, b)
+        eval(matmul(a, b))  // warm-up
+        let start = Date()
+        var acc = a
+        for _ in 0..<iterations {
+            acc = matmul(acc, b) * 0.01
+            eval(acc)
+        }
+        let seconds = Date().timeIntervalSince(start)
+        let flops = 2.0 * 4096 * 4096 * 4096 * Double(iterations)
+        return ThermalProbe(thermalState: thermalStateName(), tflops: flops / seconds / 1e12)
+    }
+}
+
+extension Diagnostics {
+    /// Short denoising benchmark of the transformer alone at a given size: one warm-up step, then `steps` timed
+    /// steps. Text embeddings are random (their values do not affect cost); LoRA is bound dynamically.
+    public static func benchTransformer(
+        model: ModelDirectory, width: Int, height: Int, textLength: Int, steps: Int, loras: [LoRASpec]
+    ) throws -> (steps: [Double], footprint: Int, mlxPeak: Int) {
+        let (transformer, _) = try loadTransformer(model, loras: loras)
+        let (lh, lw) = (height / 16, width / 16)
+        let embeds = (MLXRandom.normal([1, textLength, 4096], key: MLXRandom.key(5)) * 4).asType(.bfloat16)
+        var latents = MLXRandom.normal([1, lh * lw, 64], key: MLXRandom.key(6)).asType(.bfloat16)
+        let rope = transformer.rope(textLength: textLength, latentHeight: lh, latentWidth: lw)
+        let cache = transformer.prefill(text: embeds, rope: rope.text)
+        eval(cache.arrays + [rope.image.cos, rope.image.sin])
+        Memory.peakMemory = 0
+        let sampler = FootprintSampler()
+        sampler.start()
+        defer { sampler.stop() }
+        _ = sampler.takePeak()
+        var times: [Double] = []
+        for step in 0...steps {
+            let start = Date()
+            let sigma = Float(1 - Double(step) / Double(steps + 2))
+            let velocity = transformer(latents: latents, sigma: sigma, cache: cache, rope: rope.image)
+            latents = (latents.asType(.float32) - 0.05 * velocity.asType(.float32)).asType(.bfloat16)
+            eval(latents)
+            if step > 0 { times.append(Date().timeIntervalSince(start)) }
+        }
+        return (times, sampler.takePeak(), Memory.peakMemory)
     }
 }

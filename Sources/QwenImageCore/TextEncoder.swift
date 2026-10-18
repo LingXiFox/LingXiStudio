@@ -15,6 +15,9 @@ final class QwenTextEncoder: ParameterContainer {
         var intermediateSize = 12288
         var ropeTheta: Float = 5_000_000
         var eps: Float = 1e-6
+        /// Keep the residual stream in fp32 (default). `false` reproduces the reference's pure bf16 stream and
+        /// exists for parity tests (`LINGXI_TE_RESIDUAL=bf16`).
+        var residualFloat32 = ProcessInfo.processInfo.environment["LINGXI_TE_RESIDUAL"] != "bf16"
     }
 
     struct Layer {
@@ -85,8 +88,9 @@ final class QwenTextEncoder: ParameterContainer {
         let length = ids.count
         // The residual stream is kept in fp32: activations reach the thousands, where bf16 accumulation
         // drifts measurably from an fp32 reference. Matmuls and attention still run in bf16.
-        var hidden = embedTokens[MLXArray(ids.map { Int32($0) })].expandedDimensions(axis: 0).asType(.float32)
+        var hidden = embedTokens[MLXArray(ids.map { Int32($0) })].expandedDimensions(axis: 0)
         let dtype = embedTokens.dtype
+        if config.residualFloat32 { hidden = hidden.asType(.float32) }
         let c = config
         let scale = 1 / Float(c.headDim).squareRoot()
         for layer in layers {

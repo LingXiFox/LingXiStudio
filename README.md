@@ -16,6 +16,12 @@ Performance alignment (see [docs/performance-alignment.md](docs/performance-alig
 step and a fused Q/K RMSNorm + RoPE Metal kernel, steady-state denoising runs at 5.60 s/step against MFLUX's
 6.05 s/step on the same machine and configuration (108%), at a 17.8 GB peak process footprint.
 
+Phase 1.5 (see [docs/phase-1.5-report.md](docs/phase-1.5-report.md)): every stage is checked against the official
+diffusers implementation (28 staged parity checks, all within the reference's own float noise), and LoRA is applied
+dynamically — base weights are never modified, adapters load, unload, enable, disable and rescale at runtime. With the
+rank-256 turbo LoRA applied on the fly, steady-state denoising runs at 6.05 s/step (median of 5 thermally gated runs),
+which is the baked speed plus the LoRA's own arithmetic.
+
 ## Layout
 
 | Path | Purpose |
@@ -28,10 +34,13 @@ step and a fused Q/K RMSNorm + RoPE Metal kernel, steady-state denoising runs at
 | `Sources/QwenImageCore/Pipeline.swift` | Staged pipeline: only one large component is resident at a time |
 | `Sources/QwenImageCore/ImageWriter.swift` | RGBA PNG + JSON sidecar with the full generation record |
 | `Sources/QwenImageCore/FusedKernels.swift` | Fused Q/K RMSNorm + RoPE Metal kernel |
-| `Sources/QwenImageCore/LoRA.swift` | PEFT LoRA baking (fp32 merge, single rounding) |
+| `Sources/QwenImageCore/LoRA.swift` | Dynamic PEFT LoRA: adapters, stack (load/unload/enable/scale), runtime groups |
+| `Sources/QwenImageCore/Runtime.swift` | Process-wide MLX settings (command buffer size), call before any MLX use |
 | `Sources/QwenImageCore/ProcessMemory.swift` | Process footprint sampling per stage |
 | `Sources/qwen-image/main.swift` | CLI (`generate`, `validate`, numeric `debug-*` dumps) |
-| `Scripts/benchmark.sh` | Same-config benchmark against MFLUX with thermal cooldown |
+| `Scripts/benchmark.sh` | Same-config benchmark (LingXi / frozen baseline / MFLUX), thermally gated |
+| `Scripts/thermal-gate.sh` | Waits until the GPU probe is back to cold throughput |
+| `Tests/Parity/` | Staged numerical parity suite against diffusers (development only, needs Python) |
 
 ## Build and run
 
@@ -44,7 +53,7 @@ swift build -c release
 ```
 
 Defaults: model `~/Models/Qwen-Image-2.1-BF16`, 1024×1024, 40 steps, true CFG off (the model is sampled without guidance).
-Turbo: `--lora <file>:1.0 --scheduler viggle_turbo --steps 6`.
+Turbo: `--lora <file>:1.0 --scheduler viggle_turbo --steps 6`. Several LoRAs: `--lora a.safetensors:0.8,b.safetensors`.
 Results go to `outputs/` with a `.json` sidecar (prompt, seed, size, steps, scheduler, timings, peak memory).
 
 ## Memory strategy (32 GB unified memory)
@@ -59,15 +68,11 @@ Each component is released and the MLX buffer cache cleared before the next one 
 
 ## Numerical verification
 
-Each component was checked against the diffusers / transformers reference implementations:
-
-| Component | Check | Result |
-|---|---|---|
-| Tokenizer | token ids vs HF `tokenizers`, 6 cases incl. CJK, emoji, special tokens | identical |
-| Scheduler | 40-step sigmas vs diffusers `FlowMatchEulerDiscreteScheduler` | max abs diff 1.3e-7 |
-| Text encoder | hidden states vs transformers FP32 | worst-token cosine 0.9986 (transformers BF16: 0.9535) |
-| Transformer | one step at 384×256 vs diffusers BF16 | cosine 0.99993, rel-L2 1.2% |
-| VAE decoder | decode of a real image latent vs diffusers FP32 | rel-L2 2e-4, mean 0.01 8-bit levels |
+`Tests/Parity/run.sh` runs each stage of LingXi and the official diffusers implementation on the same intermediate
+inputs (text encoder, conditioning, transformer per block, LoRA vs PEFT, scheduler, Euler update, VAE, postprocess,
+6-step end to end). Each result is compared with the reference's own noise floor, and deliberately wrong controls
+(post-norm text conditioning, missing LoRA) must be detected. Results are in
+[docs/phase-1.5-report.md](docs/phase-1.5-report.md).
 
 The text encoder keeps its residual stream in FP32 (matmuls stay BF16), which is why it tracks the FP32 reference
-closer than a pure BF16 run.
+closer than a pure BF16 run (`LINGXI_TE_RESIDUAL=bf16` gives the reference's strict BF16 stream).

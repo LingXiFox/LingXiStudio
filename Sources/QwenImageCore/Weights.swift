@@ -22,7 +22,7 @@ public enum WeightError: Error, CustomStringConvertible {
 /// that are never requested (the vision tower and `lm_head` of the text encoder) never occupy memory.
 struct WeightStore {
     let component: String
-    var tensors: [String: MLXArray]
+    private var tensors: [String: MLXArray]
 
     init(directory: URL, component: String) throws {
         guard FileManager.default.fileExists(atPath: directory.path) else {

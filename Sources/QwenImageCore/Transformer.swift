@@ -74,6 +74,11 @@ final class QwenImageTransformer: ParameterContainer {
     let projOut: Linear
     let blocks: [Block]
 
+    /// Active LoRA bindings, rebuilt from a `LoRAStack` by `bind(_:)`. Base weights are never modified.
+    private var loraGroups: [String: LoRAGroup] = [:]
+    private var boundRevision: Int?
+    private var boundStack: ObjectIdentifier?
+
     var parameters: [MLXArray] {
         [imgIn.weight, txtNorm, txtIn.weight, txtOut.weight, timeLinear1.weight, timeLinear2.weight,
          modulation.weight, normOut.weight, projOut.weight]
@@ -113,36 +118,100 @@ final class QwenImageTransformer: ParameterContainer {
         }
     }
 
+    // MARK: - LoRA
+
+    /// Every base linear layer a LoRA may target, grouped by shared input. Groups with several targets run
+    /// their LoRA down-projections as one matmul.
+    private func loraLayout() -> [(group: String, targets: [String], shapes: [[Int]])] {
+        let d = config.dim
+        let mlp = d * config.mlpRatio
+        var layout: [(String, [String], [[Int]])] = [
+            ("img_in", ["img_in"], [[d, config.inChannels]]),
+            ("txt_in.in_layer", ["txt_in.in_layer"], [[d, config.contextDim]]),
+            ("txt_in.out_layer", ["txt_in.out_layer"], [[d, d]]),
+            ("time.linear_1", ["time_text_embed.timestep_embedder.linear_1"], [[d, 256]]),
+            ("time.linear_2", ["time_text_embed.timestep_embedder.linear_2"], [[d, d]]),
+            ("modulation", ["modulation.1"], [[4 * d, d]]),
+            ("norm_out", ["norm_out.linear"], [[d, d]]),
+            ("proj_out", ["proj_out"], [[config.inChannels, d]]),
+        ]
+        for i in 0..<config.layers {
+            let p = "transformer_blocks.\(i)"
+            layout.append(("\(i).qkv", ["\(p).attn.to_q", "\(p).attn.to_k", "\(p).attn.to_v"], [[d, d], [d, d], [d, d]]))
+            layout.append(("\(i).out", ["\(p).attn.to_out.0"], [[d, d]]))
+            layout.append(("\(i).mlp_in", ["\(p).img_mlp.gate_layer", "\(p).img_mlp.proj"], [[mlp, d], [mlp, d]]))
+            layout.append(("\(i).mlp_out", ["\(p).img_mlp.out"], [[d, mlp]]))
+        }
+        return layout
+    }
+
+    /// Applies the stack's active composition. Cheap when nothing changed since the last call.
+    ///
+    /// The previous bindings are simply dropped, so disabling or unloading every adapter returns the model to its
+    /// exact base behaviour. The compiled step is reset because it captures the bound factors.
+    func bind(_ stack: LoRAStack) throws {
+        if boundStack == ObjectIdentifier(stack), boundRevision == stack.revision { return }
+        let active = stack.active
+        let layout = loraLayout()
+        let known = Set(layout.flatMap(\.targets))
+        for entry in active {
+            let unmatched = entry.adapter.targets.keys.filter { !known.contains($0) }.sorted()
+            if !unmatched.isEmpty { throw LoRAError.unmatched(file: entry.adapter.name, keys: unmatched) }
+        }
+        var groups: [String: LoRAGroup] = [:]
+        // Profiling aid: restrict LoRA to group names containing one of these substrings.
+        let only = ProcessInfo.processInfo.environment["LINGXI_LORA_ONLY"]?.split(separator: ",").map(String.init)
+        for item in layout where only == nil || only!.contains(where: { item.group.contains($0) }) {
+            if let group = try LoRAGroup.make(targets: item.targets, baseShapes: item.shapes, active: active) {
+                groups[item.group] = group
+            }
+        }
+        eval(groups.values.flatMap(\.arrays))
+        loraGroups = groups
+        boundStack = ObjectIdentifier(stack)
+        boundRevision = stack.revision
+        compiledImageStep = nil
+    }
+
+    var activeLoRAGroups: Int { loraGroups.count }
+
+    private func linear(_ group: String, _ base: Linear, _ x: MLXArray) -> MLXArray {
+        let y = base(x)
+        guard let lora = loraGroups[group] else { return y }
+        return lora.apply(x, to: [y])[0]
+    }
+
     // MARK: - Geometry
 
     /// 3-axis RoPE angles. Text advances one shared position on every axis; the target image freezes the frame
     /// axis at the text length and lays tokens on a height/width grid centred on zero.
+    ///
+    /// Angles follow the reference's fp32 arithmetic: `1 / theta^(2k/d)` and `position * omega` in fp32.
     func rope(textLength: Int, latentHeight: Int, latentWidth: Int) -> (text: Rope, image: Rope) {
-        func frequencies(_ dim: Int) -> [Double] {
-            stride(from: 0, to: dim, by: 2).map { 1.0 / pow(config.ropeTheta, Double($0) / Double(dim)) }
+        func frequencies(_ dim: Int) -> [Float] {
+            stride(from: 0, to: dim, by: 2).map { 1 / powf(Float(config.ropeTheta), Float($0) / Float(dim)) }
         }
         let axes = config.axesDims.map(frequencies)
         let half = axes.reduce(0) { $0 + $1.count }
 
-        func table(_ positions: [(Double, Double, Double)]) -> Rope {
+        func table(_ positions: [(Int, Int, Int)]) -> Rope {
             var angles = [Float]()
             angles.reserveCapacity(positions.count * half)
             for (f, h, w) in positions {
                 for (axis, value) in [(0, f), (1, h), (2, w)] {
-                    for omega in axes[axis] { angles.append(Float(value * omega)) }
+                    for omega in axes[axis] { angles.append(Float(value) * omega) }
                 }
             }
             let array = MLXArray(angles, [positions.count, half])
             return Rope(cos: MLX.cos(array), sin: MLX.sin(array))
         }
 
-        let text = table((0..<textLength).map { (Double($0), Double($0), Double($0)) })
-        let frame = Double(textLength)
-        var image: [(Double, Double, Double)] = []
+        let text = table((0..<textLength).map { ($0, $0, $0) })
+        var image: [(Int, Int, Int)] = []
         image.reserveCapacity(latentHeight * latentWidth)
         for h in -(latentHeight - latentHeight / 2)..<(latentHeight / 2) {
             for w in -(latentWidth - latentWidth / 2)..<(latentWidth / 2) {
-                image.append((frame, Double(h), Double(w)))
+                image.append((textLength, h, w))
             }
         }
         return (text, table(image))
@@ -161,16 +230,28 @@ final class QwenImageTransformer: ParameterContainer {
         let freqs = exp(-log(Float(10000)) * MLXArray((0..<half).map { Float($0) }) / Float(half))
         let args = rows.expandedDimensions(axis: 1) * freqs.expandedDimensions(axis: 0)
         let projection = concatenated([MLX.cos(args), MLX.sin(args)], axis: -1).asType(.bfloat16)
-        return timeLinear2(silu(timeLinear1(projection)))
+        return linear("time.linear_2", timeLinear2, silu(linear("time.linear_1", timeLinear1, projection)))
     }
 
-    private func textProjection(_ x: MLXArray) -> MLXArray {
+    /// Shared modulation `[t-row, 0-row]` x `[scale1 | gate1 | scale2 | gate2]`.
+    func modulationParameters(_ temb: MLXArray) -> MLXArray {
+        linear("modulation", modulation, silu(temb))
+    }
+
+    func textProjection(_ x: MLXArray) -> MLXArray {
         let xf = x.asType(.float32)
         let normed = xf * rsqrt(mean(xf * xf, axis: -1, keepDims: true) + config.eps) * (txtNorm.asType(.float32) + 1)
-        return txtOut(geluTanh(txtIn(normed.asType(x.dtype))))
+        let hidden = geluTanh(linear("txt_in.in_layer", txtIn, normed.asType(x.dtype)))
+        return linear("txt_in.out_layer", txtOut, hidden)
     }
 
     // MARK: - Attention
+
+    /// diffusers `RMSNorm` with a bf16 weight: normalize in fp32, round, then multiply by the weight (rounded).
+    private func referenceRMSNorm(_ x: MLXArray, _ weight: MLXArray) -> MLXArray {
+        let xf = x.asType(.float32)
+        return (xf * rsqrt(mean(xf * xf, axis: -1, keepDims: true) + config.eps)).asType(x.dtype) * weight
+    }
 
     private func applyRope(_ x: MLXArray, _ rope: Rope) -> MLXArray {
         let shape = x.shape
@@ -184,19 +265,22 @@ final class QwenImageTransformer: ParameterContainer {
     }
 
     /// Projects to `[1, heads, L, headDim]` query/key/value with QK-norm and RoPE applied.
-    private func project(_ block: Block, _ x: MLXArray, _ rope: Rope) -> (MLXArray, MLXArray, MLXArray) {
+    private func project(_ index: Int, _ x: MLXArray, _ rope: Rope) -> (MLXArray, MLXArray, MLXArray) {
+        let block = blocks[index]
         let length = x.dim(1)
         let c = config
-        var q = block.q(x).reshaped(1, length, c.heads, c.headDim)
-        var k = block.k(x).reshaped(1, length, c.heads, c.headDim)
-        let v = block.v(x).reshaped(1, length, c.heads, c.headDim).transposed(0, 2, 1, 3)
+        var qkv = [block.q(x), block.k(x), block.v(x)]
+        if let lora = loraGroups["\(index).qkv"] { qkv = lora.apply(x, to: qkv) }
+        var q = qkv[0].reshaped(1, length, c.heads, c.headDim)
+        var k = qkv[1].reshaped(1, length, c.heads, c.headDim)
+        let v = qkv[2].reshaped(1, length, c.heads, c.headDim).transposed(0, 2, 1, 3)
         if options.fusedQKNormRope {
             (q, k) = FusedKernels.qkNormRope(
                 q: q, k: k, weightQ: block.normQ, weightK: block.normK, cos: rope.cos, sin: rope.sin, eps: c.eps)
             return (q.transposed(0, 2, 1, 3), k.transposed(0, 2, 1, 3), v)
         }
-        q = applyRope(MLXFast.rmsNorm(q, weight: block.normQ, eps: c.eps), rope).transposed(0, 2, 1, 3)
-        k = applyRope(MLXFast.rmsNorm(k, weight: block.normK, eps: c.eps), rope).transposed(0, 2, 1, 3)
+        q = applyRope(referenceRMSNorm(q, block.normQ), rope).transposed(0, 2, 1, 3)
+        k = applyRope(referenceRMSNorm(k, block.normK), rope).transposed(0, 2, 1, 3)
         return (q, k, v)
     }
 
@@ -217,8 +301,15 @@ final class QwenImageTransformer: ParameterContainer {
             scale1: r[0..<d], gate1: tanh(r[d..<(2 * d)]), scale2: r[(2 * d)..<(3 * d)], gate2: tanh(r[(3 * d)...]))
     }
 
-    private func feedForward(_ block: Block, _ x: MLXArray) -> MLXArray {
-        block.mlpOut(silu(block.mlpGate(x)) * block.mlpProj(x))
+    private func attentionOut(_ index: Int, _ x: MLXArray) -> MLXArray {
+        linear("\(index).out", blocks[index].out, x)
+    }
+
+    private func feedForward(_ index: Int, _ x: MLXArray) -> MLXArray {
+        let block = blocks[index]
+        var gateProj = [block.mlpGate(x), block.mlpProj(x)]
+        if let lora = loraGroups["\(index).mlp_in"] { gateProj = lora.apply(x, to: gateProj) }
+        return linear("\(index).mlp_out", block.mlpOut, silu(gateProj[0]) * gateProj[1])
     }
 
     private func layerNorm(_ x: MLXArray) -> MLXArray {
@@ -228,21 +319,21 @@ final class QwenImageTransformer: ParameterContainer {
     /// Runs the text prefix through every block once and caches its post-RoPE keys/values.
     func prefill(text: MLXArray, rope: Rope) -> TextCache {
         let length = text.dim(1)
-        let mod = modulationRow(modulation(silu(timeEmbedding(sigma: 0))), row: 1)
+        let mod = modulationRow(modulationParameters(timeEmbedding(sigma: 0)), row: 1)
         let scale = 1 / Float(config.headDim).squareRoot()
         var hidden = textProjection(text)
         var keys: [MLXArray] = []
         var values: [MLXArray] = []
-        for (index, block) in blocks.enumerated() {
-            let (q, k, v) = project(block, layerNorm(hidden) * (1 + mod.scale1), rope)
+        for index in blocks.indices {
+            let (q, k, v) = project(index, layerNorm(hidden) * (1 + mod.scale1), rope)
             keys.append(k)
             values.append(v)
             // The last block's text output feeds nothing downstream, only its K/V matter.
             if index == blocks.count - 1 { break }
             let attention = MLXFast.scaledDotProductAttention(
                 queries: q, keys: k, values: v, scale: scale, mask: .causal)
-            hidden = hidden + mod.gate1 * block.out(merge(attention, length: length))
-            hidden = hidden + mod.gate2 * feedForward(block, layerNorm(hidden) * (1 + mod.scale2))
+            hidden = hidden + mod.gate1 * attentionOut(index, merge(attention, length: length))
+            hidden = hidden + mod.gate2 * feedForward(index, layerNorm(hidden) * (1 + mod.scale2))
             eval([hidden, k, v])
         }
         return TextCache(keys: keys, values: values, textLength: length)
@@ -261,6 +352,14 @@ final class QwenImageTransformer: ParameterContainer {
 
     private var compiledImageStep: (([MLXArray]) -> [MLXArray])?
 
+    /// Same function as `callAsFunction`, evaluated eagerly (honours `blockTrace`).
+    func uncompiled(latents: MLXArray, sigma: Float, cache: TextCache, rope: Rope) -> MLXArray {
+        imageStep([latents, timeEmbedding(sigma: sigma), rope.cos, rope.sin] + cache.keys + cache.values)[0]
+    }
+
+    /// Debug hook: receives the image-token hidden state after every block (uncompiled path only).
+    var blockTrace: ((Int, MLXArray) -> Void)?
+
     /// One denoising evaluation of the image tokens against the cached text prefix.
     /// Inputs: `[latents, temb, ropeCos, ropeSin, keys..., values...]`.
     private func imageStep(_ inputs: [MLXArray]) -> [MLXArray] {
@@ -270,20 +369,21 @@ final class QwenImageTransformer: ParameterContainer {
         let keys = inputs[4..<(4 + blocks.count)]
         let values = inputs[(4 + blocks.count)...]
         let length = latents.dim(1)
-        let mod = modulationRow(modulation(silu(temb)), row: 0)
+        let mod = modulationRow(modulationParameters(temb), row: 0)
         let scale = 1 / Float(config.headDim).squareRoot()
-        var hidden = imgIn(latents)
-        for (index, block) in blocks.enumerated() {
-            let (q, k, v) = project(block, layerNorm(hidden) * (1 + mod.scale1), rope)
+        var hidden = linear("img_in", imgIn, latents)
+        for index in blocks.indices {
+            let (q, k, v) = project(index, layerNorm(hidden) * (1 + mod.scale1), rope)
             let attention = MLXFast.scaledDotProductAttention(
                 queries: q,
                 keys: concatenated([keys[keys.startIndex + index], k], axis: 2),
                 values: concatenated([values[values.startIndex + index], v], axis: 2),
                 scale: scale, mask: .none)
-            hidden = hidden + mod.gate1 * block.out(merge(attention, length: length))
-            hidden = hidden + mod.gate2 * feedForward(block, layerNorm(hidden) * (1 + mod.scale2))
+            hidden = hidden + mod.gate1 * attentionOut(index, merge(attention, length: length))
+            hidden = hidden + mod.gate2 * feedForward(index, layerNorm(hidden) * (1 + mod.scale2))
+            blockTrace?(index, hidden)
         }
-        let outScale = normOut(silu(temb))[0]
-        return [projOut(layerNorm(hidden) * (1 + outScale))]
+        let outScale = linear("norm_out", normOut, silu(temb))[0]
+        return [linear("proj_out", projOut, layerNorm(hidden) * (1 + outScale))]
     }
 }

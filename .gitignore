@@ -5,3 +5,12 @@ DerivedData/
 .tmp/
 outputs/
 .DS_Store
+*.safetensors
+*.gguf
+*.ckpt
+*.mlmodelc/
+*.trace
+*.log
+.env
+.env.*
+!.env.example

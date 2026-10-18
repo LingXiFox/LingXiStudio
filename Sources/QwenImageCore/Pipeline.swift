@@ -124,6 +124,21 @@ public final class QwenImagePipeline: @unchecked Sendable {
         scheduleConfig = try FlowMatchSchedule.Config(contentsOf: model.scheduler.appending(path: "scheduler_config.json"))
     }
 
+    /// `VaeImageProcessor.postprocess`: `(x / 2 + 0.5).clamp(0, 1)`, then `round(x * 255)` to uint8.
+    static func toRGBA8(_ image: MLXArray) -> MLXArray {
+        round(clip(image * 0.5 + 0.5, min: 0, max: 1) * 255).asType(.uint8)
+    }
+
+    func schedule(for request: GenerationRequest, imageTokens: Int) -> FlowMatchSchedule {
+        switch request.scheduler {
+        case .linear: FlowMatchSchedule(steps: request.steps, imageSeqLen: imageTokens, config: scheduleConfig)
+        case .viggleTurbo:
+            FlowMatchSchedule(
+                nodes: FlowMatchSchedule.viggleTurboNodes, imageSeqLen: imageTokens, config: scheduleConfig,
+                useTerminal: false)
+        }
+    }
+
     /// Token ids of the prompt as the reference pipeline builds them, and how many leading system tokens to drop.
     public func promptTokens(_ prompt: String) throws -> (ids: [Int], drop: Int) {
         let text = prompt.isEmpty ? " " : prompt
@@ -190,7 +205,7 @@ public final class QwenImagePipeline: @unchecked Sendable {
                 embeddings.append(embedding)
             }
         }
-        Memory.clearCache()
+        releaseStageMemory()
         finish(.encodingPrompt)
         try checkCancelled()
 
@@ -199,21 +214,17 @@ public final class QwenImagePipeline: @unchecked Sendable {
         let latentHeight = request.height / 16
         let latentWidth = request.width / 16
         let imageTokens = latentHeight * latentWidth
-        let schedule =
-            switch request.scheduler {
-            case .linear: FlowMatchSchedule(steps: request.steps, imageSeqLen: imageTokens, config: scheduleConfig)
-            case .viggleTurbo:
-                FlowMatchSchedule(
-                    nodes: FlowMatchSchedule.viggleTurboNodes, imageSeqLen: imageTokens, config: scheduleConfig,
-                    useTerminal: false)
-            }
+        let schedule = schedule(for: request, imageTokens: imageTokens)
         var stepTimes: [Double] = []
         var latents = MLXRandom.normal([1, imageTokens, 64], key: MLXRandom.key(request.seed)).asType(.bfloat16)
         do {
-            var store = try WeightStore(directory: model.transformer, component: "transformer")
-            try store.bake(request.loras)
-            let transformer = try QwenImageTransformer(store: store)
+            let transformer = try QwenImageTransformer(
+                store: WeightStore(directory: model.transformer, component: "transformer"))
             transformer.materialize { report(.loadingTransformer, $0) }
+            // LoRA factors stay separate from the base weights and are applied on the fly.
+            let loras = LoRAStack()
+            for spec in request.loras { try loras.load(spec) }
+            try transformer.bind(loras)
             finish(.loadingTransformer)
             try checkCancelled()
 
@@ -239,9 +250,7 @@ public final class QwenImagePipeline: @unchecked Sendable {
                         latents: latents, sigma: sigma, cache: caches[1].0, rope: caches[1].1)
                     velocity = unconditional + request.trueCFGScale * (velocity - unconditional)
                 }
-                // Euler step in fp32, stored back in the model dtype like the reference scheduler.
-                let dt = schedule.sigmas[step + 1] - sigma
-                latents = (latents.asType(.float32) + dt * velocity.asType(.float32)).asType(.bfloat16)
+                latents = schedule.step(latents: latents, velocity: velocity, index: step)
                 eval(latents)
                 stepTimes.append(Date().timeIntervalSince(stepStart))
                 // The first step includes kernel compilation, so the rate excludes it once more are available.
@@ -251,7 +260,7 @@ public final class QwenImagePipeline: @unchecked Sendable {
                     secondsPerStep: recent.reduce(0, +) / Double(recent.count))
             }
         }
-        Memory.clearCache()
+        releaseStageMemory()
         finish(.denoising)
         try checkCancelled()
 
@@ -267,17 +276,24 @@ public final class QwenImagePipeline: @unchecked Sendable {
 
             report(.decoding, 0)
             let image = vae.decode(latents, latentHeight: latentHeight, latentWidth: latentWidth)
-            // (x / 2 + 0.5) * 255, rounded, as the reference image processor does.
-            pixels = round(clip(image * 0.5 + 0.5, min: 0, max: 1) * 255).asType(.uint8)
+            pixels = QwenImagePipeline.toRGBA8(image)
             eval(pixels)
         }
         let rgba = pixels.asArray(UInt8.self)
-        Memory.clearCache()
+        releaseStageMemory()
         finish(.decoding)
         report(.done, 1)
 
         return GeneratedImage(
             width: request.width, height: request.height, rgba: rgba, request: request, timings: timings,
             peakMemoryBytes: Memory.peakMemory, totalSeconds: Date().timeIntervalSince(start), stepSeconds: stepTimes)
+    }
+
+    /// Returns a finished stage's buffers to the system. Command buffer completion handlers can still hold the stage's
+    /// arrays after `eval` returns; waiting for the stream first makes sure they are freed before the cache is cleared,
+    /// instead of landing in the cache while the next stage loads.
+    private func releaseStageMemory() {
+        Stream.gpu.synchronize()
+        Memory.clearCache()
     }
 }

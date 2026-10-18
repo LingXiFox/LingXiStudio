@@ -1,4 +1,5 @@
 import Foundation
+import MLX
 
 /// `FlowMatchEulerDiscreteScheduler` as configured for Qwen-Image-2.1: exponential resolution-dependent time
 /// shift followed by the terminal stretch, sampled with first-order Euler steps.
@@ -78,5 +79,12 @@ public struct FlowMatchSchedule: Sendable {
             values = values.map { 1 - (1 - $0) / scale }
         }
         sigmas = values.map { Float($0) } + [0]
+    }
+
+    /// Reference Euler update (`FlowMatchEulerDiscreteScheduler.step`): `dt * v` is formed in the model dtype,
+    /// added to the fp32-upcast sample, and the result is cast back to the model dtype.
+    public func step(latents: MLXArray, velocity: MLXArray, index: Int) -> MLXArray {
+        let dt = sigmas[index + 1] - sigmas[index]
+        return (latents.asType(.float32) + (velocity * dt).asType(.float32)).asType(velocity.dtype)
     }
 }

@@ -1,7 +1,9 @@
 import MLX
 
+/// SiLU evaluated in fp32 and rounded once, like PyTorch's opmath for bf16 inputs.
 func silu(_ x: MLXArray) -> MLXArray {
-    x * sigmoid(x)
+    let xf = x.asType(.float32)
+    return (xf * sigmoid(xf)).asType(x.dtype)
 }
 
 /// Tanh-approximated GELU, evaluated in fp32 like PyTorch's opmath for bf16 inputs.

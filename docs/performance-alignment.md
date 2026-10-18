@@ -1,5 +1,7 @@
 # Runtime 性能对齐报告：LingXiStudio vs MFLUX
 
+> 历史记录：本文的 LoRA 是烘焙进权重的。Phase 1.5 已移除烘焙，改为动态 LoRA，见 [phase-1.5-report.md](phase-1.5-report.md)。
+
 日期：2026-10-17 · 设备：MacBook Air M5 / 32 GB（无风扇）· macOS 27.2 · MLX 0.32.3（两边同版本）
 
 ## 结论

@@ -1,6 +1,8 @@
 import Foundation
 import QwenImageCore
 
+MLXRuntime.configure()
+
 let usage = """
     qwen-image — native Qwen-Image-2.1 runner (Swift + MLX)
 
@@ -21,7 +23,7 @@ let usage = """
       --steps <n>              Denoising steps (default 40)
       --seed <n>               Seed (default random)
       --output <file.png>      Output path (default ./outputs/<timestamp>-<seed>.png)
-      --lora <file[:scale]>    LoRA to bake into the transformer (comma-separate several)
+      --lora <file[:scale]>    LoRA applied at runtime, base weights untouched (comma-separate several)
       --scheduler <name>       linear (default) or viggle_turbo (6 steps)
     """
 
@@ -58,6 +60,25 @@ struct Arguments {
     }
 }
 
+/// `--lora a.safetensors:0.8,b.safetensors` -> specs (scale defaults to 1).
+func loraSpecs() -> [LoRASpec] {
+    (args.string("lora") ?? "").split(separator: ",").map { item in
+        let parts = item.split(separator: ":", maxSplits: 1)
+        let path = (String(parts[0]) as NSString).expandingTildeInPath
+        return LoRASpec(path: path, scale: parts.count > 1 ? Float(parts[1]) ?? 1 : 1)
+    }
+}
+
+func makeRequest(prompt: String) -> GenerationRequest {
+    GenerationRequest(
+        prompt: prompt, negativePrompt: args.string("negative-prompt"),
+        width: args.int("width", 1024), height: args.int("height", 1024), steps: args.int("steps", 40),
+        trueCFGScale: args.float("cfg", 1.0),
+        seed: args.string("seed").flatMap(UInt64.init) ?? UInt64.random(in: 0..<UInt64(UInt32.max)),
+        scheduler: SamplerSchedule(rawValue: args.string("scheduler") ?? "linear") ?? .linear,
+        loras: loraSpecs())
+}
+
 func formatBytes(_ bytes: Int) -> String {
     String(format: "%.2f GB", Double(bytes) / 1_073_741_824)
 }
@@ -75,17 +96,7 @@ do {
         for c in components where c.bytes > 0 {
             print("✓ \(c.name): \(c.files) file(s), \(formatBytes(Int(c.bytes)))")
         }
-        let request = GenerationRequest(
-            prompt: args.require("prompt"), negativePrompt: args.string("negative-prompt"),
-            width: args.int("width", 1024), height: args.int("height", 1024), steps: args.int("steps", 40),
-            trueCFGScale: args.float("cfg", 1.0),
-            seed: args.string("seed").flatMap(UInt64.init) ?? UInt64.random(in: 0..<UInt64(UInt32.max)),
-            scheduler: SamplerSchedule(rawValue: args.string("scheduler") ?? "linear") ?? .linear,
-            loras: (args.string("lora") ?? "").split(separator: ",").map { item in
-                let parts = item.split(separator: ":", maxSplits: 1)
-                let path = (String(parts[0]) as NSString).expandingTildeInPath
-                return LoRASpec(path: path, scale: parts.count > 1 ? Float(parts[1]) ?? 1 : 1)
-            })
+        let request = makeRequest(prompt: args.require("prompt"))
         print("seed \(request.seed), \(request.width)x\(request.height), \(request.steps) steps"
             + (request.usesTrueCFG ? ", true CFG \(request.trueCFGScale)" : ""))
 
@@ -150,18 +161,57 @@ do {
 
     case "debug-transformer":
         try Diagnostics.dumpTransformer(
-            model: model, input: args.url("in")!, sigma: args.float("sigma", 1.0),
+            model: model, input: args.url("in")!,
+            sigmas: (args.string("sigmas") ?? args.string("sigma") ?? "1.0").split(separator: ",").compactMap { Float($0) },
             latentHeight: args.int("height", 1024) / 16, latentWidth: args.int("width", 1024) / 16,
+            loras: loraSpecs(), trace: args.string("trace") == "1", to: args.url("out")!)
+
+    case "debug-conditioning":
+        try Diagnostics.dumpConditioning(
+            model: model, input: args.url("in")!, sigma: args.float("sigma", 1.0), loras: loraSpecs(),
             to: args.url("out")!)
+
+    case "debug-denoise":
+        try Diagnostics.dumpDenoise(model: model, input: args.url("in")!, request: makeRequest(prompt: ""), to: args.url("out")!)
+
+    case "debug-euler":
+        try Diagnostics.dumpEuler(model: model, input: args.url("in")!, request: makeRequest(prompt: ""), to: args.url("out")!)
+
+    case "debug-postprocess":
+        try Diagnostics.dumpPostprocess(input: args.url("in")!, to: args.url("out")!)
+
+    case "debug-lora":
+        let lines = try Diagnostics.checkLoRALifecycle(
+            model: model, input: args.url("in")!, lora: (args.require("lora") as NSString).expandingTildeInPath,
+            sigma: args.float("sigma", 0.75), latentHeight: args.int("height", 1024) / 16,
+            latentWidth: args.int("width", 1024) / 16)
+        lines.forEach { print($0) }
 
     case "debug-vae":
         try Diagnostics.dumpVAE(
             model: model, input: args.url("in")!, latentHeight: args.int("height", 1024) / 16,
             latentWidth: args.int("width", 1024) / 16, float32: args.string("dtype") == "f32", to: args.url("out")!)
 
+    case "bench-transformer":
+        let probeBefore = Diagnostics.probeThermal()
+        let r = try Diagnostics.benchTransformer(
+            model: model, width: args.int("width", 1024), height: args.int("height", 1024),
+            textLength: args.int("text-length", 31), steps: args.int("steps", 3), loras: loraSpecs())
+        let probeAfter = Diagnostics.probeThermal()
+        print("steps: " + r.steps.map { String(format: "%.3f", $0) }.joined(separator: " "))
+        print(String(format: "mean %.3f s/step  footprint peak %@  MLX peak %@", r.steps.reduce(0, +) / Double(r.steps.count),
+            formatBytes(r.footprint), formatBytes(r.mlxPeak)))
+        print(String(format: "probe before %.2f TFLOPS (%@), after %.2f TFLOPS (%@)", probeBefore.tflops,
+            probeBefore.thermalState, probeAfter.tflops, probeAfter.thermalState))
+
+    case "probe":
+        let probe = Diagnostics.probeThermal()
+        print(String(format: "thermal %@  matmul %.2f TFLOPS", probe.thermalState, probe.tflops))
+
     case "debug-kernel":
-        let (maxAbs, maxUlp) = Diagnostics.checkFusedQKNormRope()
-        print(String(format: "fused qk-norm-rope vs fp32 composed: max abs %.3g, max %.2f bf16 ulp", maxAbs, maxUlp))
+        let (maxAbs, maxUlp, mismatched) = Diagnostics.checkFusedQKNormRope()
+        print(String(format: "fused qk-norm-rope vs reference composition: max abs %.3g, max %.2f bf16 ulp, %.4f%% of elements differ",
+            maxAbs, maxUlp, mismatched * 100))
 
     default:
         print(usage)

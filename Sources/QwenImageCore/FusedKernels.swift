@@ -5,8 +5,9 @@ enum FusedKernels {
     /// Per-head RMSNorm followed by interleaved-pair RoPE, for Q and K in a single launch.
     ///
     /// The composed path reads and writes each `[1, L, H, D]` tensor ~6 times (cast, norm, cast, split pairs,
-    /// rotate, stack, cast). Here every thread owns one `(2i, 2i+1)` pair, keeps everything in fp32 registers and
-    /// rounds once on store, so the result is at least as accurate as the reference's composed ops.
+    /// rotate, stack, cast). Here every thread owns one `(2i, 2i+1)` pair and works in registers, but rounds to
+    /// `T` at exactly the points the reference does: diffusers `RMSNorm` normalizes in fp32 and rounds, multiplies
+    /// by the bf16 weight and rounds, then RoPE rotates in fp32 and rounds on store.
     /// One threadgroup of `D / 2` threads handles one `(token, head)` row.
     static let qkNormRopeSource = """
         uint row = threadgroup_position_in_grid.x;
@@ -41,10 +42,10 @@ enum FusedKernels {
         float rq = metal::precise::rsqrt(tq / D + eps[0]);
         float rk = metal::precise::rsqrt(tk / D + eps[0]);
 
-        float nqa = aq * rq * static_cast<float>(wq[2 * i]);
-        float nqb = bq * rq * static_cast<float>(wq[2 * i + 1]);
-        float nka = ak * rk * static_cast<float>(wk[2 * i]);
-        float nkb = bk * rk * static_cast<float>(wk[2 * i + 1]);
+        float nqa = static_cast<float>(T(static_cast<float>(T(aq * rq)) * static_cast<float>(wq[2 * i])));
+        float nqb = static_cast<float>(T(static_cast<float>(T(bq * rq)) * static_cast<float>(wq[2 * i + 1])));
+        float nka = static_cast<float>(T(static_cast<float>(T(ak * rk)) * static_cast<float>(wk[2 * i])));
+        float nkb = static_cast<float>(T(static_cast<float>(T(bk * rk)) * static_cast<float>(wk[2 * i + 1])));
 
         float c = cos_t[l * half_d + i];
         float s = sin_t[l * half_d + i];
