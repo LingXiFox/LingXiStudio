@@ -29,16 +29,19 @@ which is the baked speed plus the LoRA's own arithmetic.
 
 ## Workbench app
 
-`Scripts/make-app.sh` builds `dist/LingXiStudio.app` (SwiftUI, no extra dependencies, ad-hoc signed). The main window
-follows the product spec: parameters on the left 2/3; on the right, the image workspace (top) and the mode switcher
-with LoRA / history / task tabs (bottom), split 1:1. Dividers drag; double-click one to restore it.
+`Scripts/make-app.sh` builds `dist/LingXiStudio.app` (SwiftUI, no extra runtime dependencies, ad-hoc signed).
+Packaging uses the installed Xcode `actool` to compile `ICONs/icon.icon` into the native macOS layered app icon. The main window
+uses a warm cream / charcoal theme: creation on the left 2/3; on the right, the artwork canvas (top) and
+LoRA / history / task tabs (bottom), split 1:1. Dividers drag; double-click one to restore it. Global paths and runtime
+policy live in Settings; component and memory details live in the on-demand Runtime Inspector.
+See [GUI interaction acceptance](docs/gui-design-acceptance.md) for the latest UI changes and verification limits.
 
 | Area | What works |
 |---|---|
-| Model | Folder selection, integrity check per component, live residency (text encoder → transformer → VAE) |
-| Prompt | Positive / negative (negative only active with true CFG), prompt history |
+| Model | Compact model / BF16 / readiness selector; folder selection and integrity checks in the model library; residency in Inspector |
+| Prompt | Side-by-side positive / negative editors; searchable, independent preset and history windows; click outside to commit and dismiss text focus |
 | Parameters | Size presets and custom (multiples of 32), steps, guidance, seed (random / fixed, actual seed shown), batch count with seed rule, standard / Turbo schedule (Turbo needs an enabled acceleration LoRA, locks 6 steps), measured time estimate |
-| Performance | 32 GB balanced profile; app footprint, MLX allocation, swap, memory pressure, thermal state, stage, s/step, ETA |
+| Performance | Settings: verified 32 GB balanced policy and restart-required Metal batch options. Inspector: footprint, MLX, swap, pressure and thermal state. Canvas scrim: real stage, steps, s/step and denoising ETA |
 | LoRA | Import (file panel or drag), several at once, enable / scale / order / remove, compatibility check without loading the model; changes apply to the next queued task |
 | Tasks | Serial queue, cancel (memory is released), retry with the same parameters, logs, records kept across launches |
 | Images | Fit / 100 % / zoom / pan, standalone viewer window, save as, copy image / file / path / prompt, reveal in Finder, reuse all parameters, regenerate with the same seed, move to Trash |

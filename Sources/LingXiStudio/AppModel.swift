@@ -9,6 +9,14 @@ import QwenImageCore
 final class AppModel {
     enum WorkspaceTab: String, CaseIterable { case preview, inputs, mask }
     enum ManagementTab: String, CaseIterable { case lora, history, tasks }
+    enum Appearance: String, CaseIterable { case system, light, dark }
+
+    /// Outcome of the last task that did not produce an image, shown inside the canvas until dismissed.
+    struct CanvasNotice: Equatable {
+        var failed: Bool
+        var title: String
+        var detail: String?
+    }
 
     // MARK: Settings
 
@@ -16,6 +24,7 @@ final class AppModel {
     var outputDirectory: URL { didSet { save(); reloadGallery() } }
     var exportSettings = ExportSettings() { didSet { save() } }
     var offline = false { didSet { save(); downloads.offline = offline } }
+    var appearance: Appearance = .system { didSet { save(); applyAppearance() } }
     /// Extra folders shown in the gallery, e.g. the previous WebUI's output folder.
     var galleryFolders: [String] = [] { didSet { save(); reloadGallery() } }
     var loraFolder: URL { didSet { save() } }
@@ -57,6 +66,7 @@ final class AppModel {
 
     var tasks: [TaskRecord] = [] { didSet { saveTasks() } }
     var live: LiveProgress?
+    var canvasNotice: CanvasNotice?
     var artworks: [Artwork] = []
     var favorites: Set<String> = [] { didSet { save() } }
     var selection: URL?
@@ -102,6 +112,7 @@ final class AppModel {
         favorites = Set(defaults.stringArray(forKey: "favorites") ?? [])
         galleryFolders = defaults.stringArray(forKey: "galleryFolders") ?? []
         offline = defaults.bool(forKey: "offline")
+        appearance = Appearance(rawValue: defaults.string(forKey: "appearance") ?? "") ?? .system
         mode = CreationMode(rawValue: defaults.string(forKey: "mode") ?? "") ?? .textToImage
         conditions = (decode([InputImage].self, "conditions") ?? []).filter { FileManager.default.fileExists(atPath: $0.storedPath) }
         initialImage = decode(InputImage.self, "initialImage").flatMap {
@@ -124,10 +135,20 @@ final class AppModel {
         validateModel()
         reloadGallery()
         syncMaskCanvas()
-        metricsTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+        applyAppearance()
+        // Memory and thermal figures are cheap sysctl reads; two seconds is enough for warnings and the inspector.
+        metricsTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.metrics = SystemMetrics.sample() }
         }
         AppLog.write("app started; model \(modelRoot?.path ?? "none")")
+    }
+
+    func applyAppearance() {
+        switch appearance {
+        case .system: NSApp?.appearance = nil
+        case .light: NSApp?.appearance = NSAppearance(named: .aqua)
+        case .dark: NSApp?.appearance = NSAppearance(named: .darkAqua)
+        }
     }
 
     // MARK: - Model lifecycle
@@ -297,7 +318,8 @@ final class AppModel {
         return Int64(estimate * gb)
     }
 
-    var memoryBudget: Int64 { Int64(Double(metrics.physicalMemory) * 0.85) }
+    let physicalMemory = Int64(ProcessInfo.processInfo.physicalMemory)
+    var memoryBudget: Int64 { Int64(Double(physicalMemory) * 0.85) }
 
     /// Problems that block queuing the current configuration.
     var blockingIssues: [String] {
@@ -332,7 +354,7 @@ final class AppModel {
         if parameters.usesTrueCFG { notes.append("真 CFG 每步计算两次，耗时约翻倍") }
         if parameters.guidance > 1 && !parameters.usesTrueCFG { notes.append("Guidance > 1 但负面提示词为空，引导不会生效") }
         if activeLoRAs.contains(where: { $0.scale < 0 || $0.scale > 1.5 }) { notes.append("LoRA 强度超出常用范围（0–1.5）") }
-        if estimatedPeakBytes > Int64(Double(metrics.physicalMemory) * 0.7) && estimatedPeakBytes <= memoryBudget {
+        if estimatedPeakBytes > Int64(Double(physicalMemory) * 0.7) && estimatedPeakBytes <= memoryBudget {
             notes.append("预计峰值内存 \(Format.bytes(estimatedPeakBytes))，接近本机上限")
         }
         if metrics.pressure == .critical { notes.append("系统内存压力严重") }
@@ -356,6 +378,7 @@ final class AppModel {
 
     func enqueue() {
         guard blockingIssues.isEmpty, let root = modelRoot else { return }
+        canvasNotice = nil
         var params = parameters
         params.steps = params.effectiveSteps
         var maskInput: InputImage?
@@ -459,9 +482,14 @@ final class AppModel {
         case .finished(let result):
             switch result {
             case .success: tasks[index].status = .done
-            case .failure(PipelineError.cancelled): tasks[index].status = .cancelled
+            case .failure(PipelineError.cancelled):
+                tasks[index].status = .cancelled
+                canvasNotice = CanvasNotice(
+                    failed: false, title: "已取消",
+                    detail: tasks[index].outputs.isEmpty ? "当前作品保持不变" : "已完成的 \(tasks[index].outputs.count) 张已保存")
             case .failure(let error):
                 tasks[index].status = .failed(Self.explain(error))
+                canvasNotice = CanvasNotice(failed: true, title: "生成失败", detail: Self.explain(error))
                 tasks[index].log.append("错误：\(error)")
                 AppLog.write("task \(taskID) failed: \(error)")
             }
@@ -756,6 +784,7 @@ final class AppModel {
         defaults.set(Array(favorites), forKey: "favorites")
         defaults.set(galleryFolders, forKey: "galleryFolders")
         defaults.set(offline, forKey: "offline")
+        defaults.set(appearance.rawValue, forKey: "appearance")
         defaults.set(mode.rawValue, forKey: "mode")
     }
 

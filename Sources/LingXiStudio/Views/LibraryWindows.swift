@@ -60,11 +60,11 @@ struct ModelRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            IconTile(symbol: "cube.fill", tint: entry.path == model.modelRoot?.path ? .indigo : .gray, size: 30)
+            IconTile(symbol: "cube.fill", tint: entry.path == model.modelRoot?.path ? Brand.fox : Brand.textTertiary, size: 30)
             VStack(alignment: .leading, spacing: 2) {
                 HStack {
                     Text(entry.name).font(.headline)
-                    if entry.path == model.modelRoot?.path { StatusPill(text: "当前", color: .indigo) }
+                    if entry.path == model.modelRoot?.path { StatusPill(text: "当前", color: Brand.foxText) }
                     if entry.favorite { Image(systemName: "star.fill").foregroundStyle(.yellow) }
                 }
                 Text(entry.path).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
@@ -283,7 +283,7 @@ struct LoRALibraryWindow: View {
                     ForEach($model.loras) { $item in
                         if matches(item) {
                             HStack(spacing: 10) {
-                                IconTile(symbol: item.purpose.symbol, tint: .orange, size: 22)
+                                IconTile(symbol: item.purpose.symbol, size: 22)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(item.name).font(.callout.weight(.medium))
                                     Text("rank \(item.rank) · \(item.targetCount) 层 · \(Format.bytes(item.fileBytes)) · \(item.source)")
@@ -374,112 +374,390 @@ struct LoRALibraryWindow: View {
     }
 }
 
-/// Settings: paths, export preferences, offline mode and diagnostics.
+/// Settings: global paths, export, runtime policy, appearance and diagnostics. Nothing here changes a single
+/// generation; those parameters stay on the main window.
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        @Bindable var model = model
         TabView {
-            Form {
-                Section("路径") {
-                    LabeledContent("模型文件夹") {
-                        HStack {
-                            Text(model.modelRoot?.path ?? "未选择").lineLimit(1).truncationMode(.middle)
-                            Button("选择…") { if let url = ImageFileActions.chooseFolder() { model.addModelFolder(url); model.modelRoot = url } }
-                        }
-                    }
-                    LabeledContent("输出目录") {
-                        HStack {
-                            Text(model.outputDirectory.path).lineLimit(1).truncationMode(.middle)
-                            Button("选择…") { if let url = ImageFileActions.chooseFolder() { model.outputDirectory = url } }
-                        }
-                    }
-                    LabeledContent("LoRA 文件夹") {
-                        HStack {
-                            Text(model.loraFolder.path).lineLimit(1).truncationMode(.middle)
-                            Button("选择…") { if let url = ImageFileActions.chooseFolder() { model.loraFolder = url } }
-                        }
-                    }
-                }
-                Section("网络") {
-                    Toggle("离线模式（禁用所有下载，推理始终离线）", isOn: $model.offline)
-                    Text("提示词和图片从不上传。下载只在你明确操作时发生，不需要登录。").font(.caption).foregroundStyle(.secondary)
-                }
-                Section("资源策略") {
-                    LabeledContent("连续生成", value: "每个任务按阶段加载、用完释放")
-                    Text("32 GB 统一内存放不下文本编码器（16 GB）与 Transformer（14 GB）同时驻留，因此任务之间不复用已加载的权重；任务结束后进程内存回到约 0.4 GB。")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            .formStyle(.grouped)
-            .tabItem { Label("通用", systemImage: "gearshape") }
-
-            Form {
-                Section("导出") {
-                    Picker("格式", selection: $model.exportSettings.format) {
-                        ForEach(ExportSettings.Format.available) { Text($0.label).tag($0) }
-                    }
-                    if model.exportSettings.format.isLossy {
-                        LabeledContent("质量") {
-                            Slider(value: $model.exportSettings.quality, in: 0.5...1)
-                        }
-                    }
-                    TextField("文件名模板", text: $model.exportSettings.template)
-                    Text("可用：{date} {time} {seed} {mode} {width} {height} {index} {name}。WebP 在本机 ImageIO 中只读，不提供导出。")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Toggle("同时导出参数记录（JSON）", isOn: $model.exportSettings.includeRecord)
-                }
-            }
-            .formStyle(.grouped)
-            .tabItem { Label("导出", systemImage: "square.and.arrow.up") }
-
-            DiagnosticsView()
-                .tabItem { Label("诊断", systemImage: "stethoscope") }
+            GeneralSettings().tabItem { Label("通用", systemImage: "gearshape") }
+            ResourceSettings().tabItem { Label("模型与资源", systemImage: "cube.box") }
+            PerformanceSettings().tabItem { Label("性能", systemImage: "gauge.with.dots.needle.67percent") }
+            AppearanceSettings().tabItem { Label("外观", systemImage: "circle.lefthalf.filled") }
+            DiagnosticsView().tabItem { Label("高级", systemImage: "stethoscope") }
         }
-        .frame(width: 620, height: 460)
+        .frame(width: 640, height: 500)
+        .brandWindow()
+    }
+}
+
+/// A path row: the folder, a chooser and a Finder shortcut.
+struct PathRow: View {
+    let title: String
+    let url: URL?
+    let choose: (URL) -> Void
+
+    var body: some View {
+        LabeledContent(title) {
+            HStack(spacing: 6) {
+                Text(url?.path ?? "未选择").lineLimit(1).truncationMode(.middle).foregroundStyle(Brand.textSecondary)
+                    .textSelection(.enabled)
+                Button("选择…") { if let picked = ImageFileActions.chooseFolder() { choose(picked) } }
+                if let url {
+                    Button("在 Finder 中显示", systemImage: "folder") { NSWorkspace.shared.open(url) }
+                        .labelStyle(.iconOnly).buttonStyle(.borderless)
+                }
+            }
+        }
+    }
+}
+
+struct GeneralSettings: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        @Bindable var model = model
+        Form {
+            Section("保存") {
+                PathRow(title: "输出目录", url: model.outputDirectory) { model.outputDirectory = $0 }
+                LabeledContent("自动保存", value: "无损 PNG + 同名 JSON 记录 + 输入图副本")
+                LabeledContent("命名", value: "日期-时间-种子，不覆盖已有文件")
+            }
+            Section("导出（另存为与批量导出）") {
+                Picker("格式", selection: $model.exportSettings.format) {
+                    ForEach(ExportSettings.Format.available) { Text($0.label).tag($0) }
+                }
+                if model.exportSettings.format.isLossy {
+                    LabeledContent("质量") {
+                        HStack {
+                            Slider(value: $model.exportSettings.quality, in: 0.5...1)
+                            Text("\(Int(model.exportSettings.quality * 100))").monospacedDigit().frame(width: 30)
+                        }
+                    }
+                }
+                TextField("文件名模板", text: $model.exportSettings.template)
+                Text("可用：{date} {time} {seed} {mode} {width} {height} {index} {name}。本机 ImageIO 不能写 WebP，所以不提供。")
+                    .font(.caption).foregroundStyle(.secondary)
+                Toggle("同时导出参数记录（JSON）", isOn: $model.exportSettings.includeRecord)
+            }
+            Section("网络") {
+                Toggle("离线模式（禁用所有下载）", isOn: $model.offline)
+                Text("推理始终在本机离线进行，提示词和图片从不上传。下载只在你明确操作时发生。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .background(Brand.base)
+    }
+}
+
+struct ResourceSettings: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        @Bindable var model = model
+        Form {
+            Section("模型") {
+                PathRow(title: "当前模型", url: model.modelRoot) { url in
+                    model.addModelFolder(url)
+                    model.modelRoot = url
+                }
+                LabeledContent("状态", value: model.modelStatus.label)
+                HStack {
+                    Button("模型库与下载…") { openWindow(id: "models") }
+                    Button("重新校验") { model.validateModel() }
+                        .disabled(model.modelRoot == nil || model.modelStatus == .validating)
+                }
+            }
+            Section("LoRA") {
+                PathRow(title: "LoRA 文件夹", url: model.loraFolder) { model.loraFolder = $0 }
+                Button("LoRA 库…") { openWindow(id: "loras") }
+            }
+            Section("图库") {
+                ForEach(model.galleryFolders, id: \.self) { path in
+                    LabeledContent(URL(fileURLWithPath: path).lastPathComponent) {
+                        HStack {
+                            Text(path).lineLimit(1).truncationMode(.middle).foregroundStyle(.secondary)
+                            Button("移除") { model.galleryFolders.removeAll { $0 == path } }
+                        }
+                    }
+                }
+                HStack {
+                    Button("添加图库文件夹…") {
+                        if let url = ImageFileActions.chooseFolder(prompt: "添加") { model.galleryFolders.append(url.path) }
+                    }
+                    if let legacy = model.legacyGalleryCandidate {
+                        Button("导入旧版 WebUI 图库") { model.galleryFolders.append(legacy.path) }.help(legacy.path)
+                    }
+                }
+                Text("额外文件夹只读取，不会移动或改写其中的文件。").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .background(Brand.base)
+    }
+}
+
+/// Runtime policy. Only settings the runtime really honours are editable; process-level MLX options apply at the next
+/// launch because MLX reads them once when it creates the Metal device.
+struct PerformanceSettings: View {
+    @AppStorage(RuntimeOverrides.opsKey) private var ops = MLXRuntime.commandBufferOps
+    @AppStorage(RuntimeOverrides.mbKey) private var mb = MLXRuntime.commandBufferMB
+
+    var body: some View {
+        Form {
+            Section("内存策略") {
+                LabeledContent("档位", value: "32 GB 平衡（已验证）")
+                LabeledContent("模型驻留", value: "按阶段加载，同一时刻只驻留一个大组件")
+                LabeledContent("缓存", value: "每个阶段结束后同步并清空 MLX 缓存")
+                Text("文本编码器（16 GB）与 Transformer（14 GB）无法同时常驻 32 GB 统一内存，所以任务之间不复用已加载的权重；任务结束后进程内存回到约 0.4 GB。其他档位需要量化或步骤缓存，尚未验证，不提供。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("Metal 命令缓冲（下次启动生效）") {
+                Stepper(value: $ops, in: 10...1000, step: 10) {
+                    LabeledContent("每个缓冲最多算子", value: "\(ops)")
+                }
+                Stepper(value: $mb, in: 40...2000, step: 20) {
+                    LabeledContent("每个缓冲最多 MB", value: "\(mb)")
+                }
+                LabeledContent("本次进程实际值", value: "\(RuntimeOverrides.current("MLX_MAX_OPS_PER_BUFFER")) op / \(RuntimeOverrides.current("MLX_MAX_MB_PER_BUFFER")) MB")
+                HStack {
+                    Button("恢复默认（\(MLXRuntime.commandBufferOps) / \(MLXRuntime.commandBufferMB)）") {
+                        ops = MLXRuntime.commandBufferOps
+                        mb = MLXRuntime.commandBufferMB
+                    }
+                    .disabled(ops == MLXRuntime.commandBufferOps && mb == MLXRuntime.commandBufferMB)
+                    Button("重新启动 LingXiStudio") { RuntimeOverrides.relaunch() }
+                        .disabled(!RuntimeOverrides.pendingRestart)
+                }
+                Text("MLX 只在首次创建 Metal 设备时读取这两个值。默认值是本机实测最快的组合；只影响提交批次，不改变计算结果。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("计算精度（固定）") {
+                LabeledContent("Transformer / 文本编码器", value: "BF16 原始权重")
+                LabeledContent("视觉编码器 / VAE", value: MLXRuntime.tf32 ? "TF32" : "真 FP32（TF32 关闭）")
+                Text("精度属于已验收的官方语义对齐范围，GUI 不提供降精度或跳步加速。").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .background(Brand.base)
+    }
+}
+
+/// User overrides of process-level MLX options, applied before `MLXRuntime.configure()` on launch.
+enum RuntimeOverrides {
+    static let opsKey = "runtime.commandBufferOps"
+    static let mbKey = "runtime.commandBufferMB"
+
+    /// Exports the stored overrides unless the environment already sets them; `MLXRuntime.configure()` fills the rest.
+    static func apply() {
+        let defaults = UserDefaults.standard
+        if let ops = defaults.object(forKey: opsKey) as? Int { setenv("MLX_MAX_OPS_PER_BUFFER", String(ops), 0) }
+        if let mb = defaults.object(forKey: mbKey) as? Int { setenv("MLX_MAX_MB_PER_BUFFER", String(mb), 0) }
+    }
+
+    static func current(_ name: String) -> String { getenv(name).map { String(cString: $0) } ?? "MLX 默认" }
+
+    static var pendingRestart: Bool {
+        let defaults = UserDefaults.standard
+        let ops = defaults.object(forKey: opsKey) as? Int ?? MLXRuntime.commandBufferOps
+        let mb = defaults.object(forKey: mbKey) as? Int ?? MLXRuntime.commandBufferMB
+        return current("MLX_MAX_OPS_PER_BUFFER") != String(ops) || current("MLX_MAX_MB_PER_BUFFER") != String(mb)
+    }
+
+    @MainActor
+    static func relaunch() {
+        let config = NSWorkspace.OpenConfiguration()
+        config.createsNewApplicationInstance = true
+        NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: config) { _, _ in
+            DispatchQueue.main.async { NSApp.terminate(nil) }
+        }
+    }
+}
+
+struct AppearanceSettings: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        @Bindable var model = model
+        Form {
+            Section("主题") {
+                Picker("外观", selection: $model.appearance) {
+                    Text("跟随系统").tag(AppModel.Appearance.system)
+                    Text("浅色 · 奶白").tag(AppModel.Appearance.light)
+                    Text("深色 · 炭黑").tag(AppModel.Appearance.dark)
+                }
+                .pickerStyle(.inline)
+            }
+            Section("界面") {
+                Button("恢复默认布局（左 2/3 · 右 1/3，右栏上下 1:1）") {
+                    model.leftFraction = 2.0 / 3.0
+                    model.rightTopFraction = 0.5
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .background(Brand.base)
     }
 }
 
 struct DiagnosticsView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.openWindow) private var openWindow
     @State private var log = ""
 
     var body: some View {
         Form {
-            Section("设备") {
-                LabeledContent("系统", value: ProcessInfo.processInfo.operatingSystemVersionString)
-                LabeledContent("统一内存", value: Format.bytes(model.metrics.physicalMemory))
-                LabeledContent("热状态", value: model.metrics.thermal.label)
-                LabeledContent("Swap", value: model.metrics.swapUsed.map { Format.bytes($0) } ?? "不可得")
-            }
             Section("运行时") {
                 LabeledContent("推理", value: "原生 Swift + MLX，完全离线")
-                LabeledContent("Metal 命令缓冲", value: "\(MLXRuntime.commandBufferOps) op / \(MLXRuntime.commandBufferMB) MB")
-                LabeledContent("FP32 精度", value: MLXRuntime.tf32 ? "TF32" : "真 FP32（TF32 关闭）")
+                LabeledContent("系统", value: ProcessInfo.processInfo.operatingSystemVersionString)
+                LabeledContent("统一内存", value: Format.bytes(model.physicalMemory))
                 LabeledContent("应用数据", value: AppPaths.support.path)
+                Button("打开 Runtime Inspector") { openWindow(id: "inspector") }
             }
             Section("今日日志") {
                 ScrollView {
                     Text(log.isEmpty ? "（空）" : log).font(.caption.monospaced()).textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .frame(height: 120)
+                .frame(height: 140)
                 HStack {
                     Button("刷新") { load() }
                     Button("在 Finder 中显示日志") { NSWorkspace.shared.activateFileViewerSelecting([AppLog.todayFile]) }
                     Button("复制诊断信息") {
                         ImageFileActions.copyText(
-                            "LingXiStudio · \(ProcessInfo.processInfo.operatingSystemVersionString) · \(Format.bytes(model.metrics.physicalMemory))\n\(log)")
+                            "LingXiStudio · \(ProcessInfo.processInfo.operatingSystemVersionString) · \(Format.bytes(model.physicalMemory))\n\(log)")
                     }
                 }
             }
         }
         .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .background(Brand.base)
         .onAppear(perform: load)
     }
 
     private func load() {
         log = (try? String(contentsOf: AppLog.todayFile, encoding: .utf8)).map { String($0.suffix(6000)) } ?? ""
     }
+}
+
+// MARK: - Runtime inspector
+
+/// On-demand technical monitor: model components and residency, memory, the live stage and step timing.
+struct RuntimeInspector: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        let m = model.metrics
+        let live = model.live
+        Form {
+            Section("模型") {
+                LabeledContent("目录") {
+                    Text(model.modelRoot?.path ?? "未选择").lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+                }
+                LabeledContent("状态", value: model.modelStatus.label)
+                if case .error(let message) = model.modelStatus {
+                    Text(message).font(.caption).foregroundStyle(Brand.danger).textSelection(.enabled)
+                }
+                ForEach(model.components, id: \.name) { c in
+                    LabeledContent(Self.title(c.name)) {
+                        HStack(spacing: 8) {
+                            Text(c.bytes > 0 ? Format.bytes(c.bytes) : "配置").monospacedDigit().foregroundStyle(.secondary)
+                            Text((model.residency[c.name] ?? .notLoaded).label)
+                                .foregroundStyle(model.residency[c.name] == .resident ? Brand.foxText : .secondary)
+                            Image(systemName: c.problems.isEmpty ? "checkmark.circle.fill" : "xmark.octagon.fill")
+                                .foregroundStyle(c.problems.isEmpty ? Brand.success : Brand.danger)
+                        }
+                    }
+                }
+                HStack {
+                    Button("重新校验") { model.validateModel() }
+                        .disabled(model.modelRoot == nil || model.modelStatus == .validating)
+                    Button("释放会话状态") { model.unloadModel() }.disabled(model.isRunning || model.modelRoot == nil)
+                }
+            }
+            Section("内存") {
+                MemoryBar(used: m.appFootprint, estimate: model.estimatedPeakBytes, total: model.physicalMemory)
+                LabeledContent("应用占用", value: Format.bytes(m.appFootprint))
+                LabeledContent("MLX 分配", value: live.map { "\(Format.bytes($0.mlxActive))（峰值 \(Format.bytes($0.mlxPeak))）" } ?? "空闲")
+                LabeledContent("本任务预计峰值", value: Format.bytes(model.estimatedPeakBytes))
+                LabeledContent("Swap", value: m.swapUsed.map { "\(Format.bytes($0)) / \(Format.bytes(m.swapTotal ?? 0))" } ?? "不可得")
+                LabeledContent("可用内存", value: m.freePercent.map { "\($0)%" } ?? "不可得")
+                LabeledContent("内存压力", value: m.pressure?.label ?? "不可得")
+                LabeledContent("热状态", value: m.thermal.label)
+            }
+            Section("当前任务") {
+                LabeledContent("阶段", value: live?.stageLabel ?? "空闲")
+                LabeledContent("进度", value: live.map { l in
+                    l.stage == .denoising ? "第 \(l.imageIndex + 1)/\(l.imageCount) 张 · 步 \(l.step)/\(l.totalSteps)" : "第 \(l.imageIndex + 1)/\(l.imageCount) 张"
+                } ?? "–")
+                LabeledContent("速度", value: live?.secondsPerStep.map { String(format: "%.2f s/step", $0) } ?? "–")
+                LabeledContent("本张耗时", value: live.map { Format.duration($0.elapsed) } ?? "–")
+                LabeledContent("预计剩余", value: live?.remaining.map { Format.duration($0) } ?? "–")
+                LabeledContent("队列", value: "等待 \(model.waitingCount) · 失败 \(model.failedCount)")
+            }
+            Section("Runtime") {
+                LabeledContent("Metal 命令缓冲", value: "\(RuntimeOverrides.current("MLX_MAX_OPS_PER_BUFFER")) op / \(RuntimeOverrides.current("MLX_MAX_MB_PER_BUFFER")) MB")
+                LabeledContent("FP32", value: RuntimeOverrides.current("MLX_ENABLE_TF32") == "0" ? "真 FP32（TF32 关闭）" : "TF32")
+                Text("GPU 利用率、专用显存等系统不提供的指标不显示；MLX 分配为运行时实际申请的统一内存。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .background(Brand.base)
+        .tint(Brand.fox)
+        .frame(minWidth: 460, minHeight: 520)
+    }
+
+    static func title(_ name: String) -> String {
+        switch name {
+        case "text_encoder": "文本编码器"
+        case "transformer": "Transformer"
+        case "vae": "VAE"
+        case "processor": "分词器"
+        case "scheduler": "调度配置"
+        default: name
+        }
+    }
+}
+
+/// Unified-memory bar: current app footprint and the estimated peak of the configured task.
+struct MemoryBar: View {
+    let used: Int
+    let estimate: Int64
+    let total: Int64
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            GeometryReader { geo in
+                let w = geo.size.width
+                let estFrac = min(Double(estimate) / Double(max(total, 1)), 1)
+                let usedFrac = min(Double(used) / Double(max(total, 1)), 1)
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Brand.hairline)
+                    Capsule().fill(color(estFrac).opacity(0.3)).frame(width: w * estFrac)
+                    Capsule().fill(color(usedFrac)).frame(width: max(w * usedFrac, 4))
+                    Rectangle().fill(Brand.danger.opacity(0.7)).frame(width: 1.5).offset(x: w * 0.85)
+                }
+            }
+            .frame(height: 8)
+            HStack {
+                Text("当前 \(Format.bytes(used))")
+                Spacer()
+                Text("预计峰值 \(Format.bytes(estimate)) / \(Format.bytes(total))")
+                    .foregroundStyle(Double(estimate) > Double(total) * 0.85 ? Brand.danger : .secondary)
+            }
+            .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private func color(_ fraction: Double) -> Color { fraction > 0.85 ? Brand.danger : fraction > 0.7 ? Brand.warning : Brand.success }
 }

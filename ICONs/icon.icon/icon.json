@@ -1,0 +1,78 @@
+{
+  "fill" : "system-dark",
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "image-name" : "05_CreativeSpark.svg",
+          "name" : "05_CreativeSpark",
+          "position" : {
+            "scale" : 1,
+            "translation-in-points" : [
+              12.604433819275982,
+              -0.5
+            ]
+          }
+        },
+        {
+          "image-name" : "04_FoxInk.png",
+          "name" : "04_FoxInk",
+          "position" : {
+            "scale" : 1,
+            "translation-in-points" : [
+              0,
+              -14
+            ]
+          }
+        },
+        {
+          "image-name" : "03_FoxCream.png",
+          "name" : "03_FoxCream",
+          "position" : {
+            "scale" : 1,
+            "translation-in-points" : [
+              1,
+              -20.5
+            ]
+          }
+        },
+        {
+          "image-name" : "02_FoxEmblem.png",
+          "name" : "02_FoxEmblem",
+          "position" : {
+            "scale" : 1,
+            "translation-in-points" : [
+              0,
+              -14
+            ]
+          }
+        },
+        {
+          "image-name" : "01_CreamCanvas.svg",
+          "name" : "01_CreamCanvas",
+          "position" : {
+            "scale" : 1,
+            "translation-in-points" : [
+              -1.2186934340514313,
+              -22.92546151641318
+            ]
+          }
+        }
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.3
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "circles" : [
+      "watchOS"
+    ],
+    "squares" : "shared"
+  }
+}

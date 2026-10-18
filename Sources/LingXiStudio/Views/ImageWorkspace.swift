@@ -3,7 +3,7 @@ import QwenImageCore
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// Right top: one image area that switches between preview, input images and the mask canvas.
+/// Right top: the artwork canvas, with the input images and mask canvas one tap away in the image modes.
 struct ImageWorkspace: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openWindow) private var openWindow
@@ -11,30 +11,37 @@ struct ImageWorkspace: View {
     var body: some View {
         @Bindable var model = model
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Picker("", selection: $model.workspaceTab) {
-                    Label("预览", systemImage: "photo").tag(AppModel.WorkspaceTab.preview)
-                    Label(model.mode.needsInitial ? "初始图" : "输入图 \(model.conditions.isEmpty ? "" : "\(model.conditions.count)")",
-                          systemImage: "photo.stack").tag(AppModel.WorkspaceTab.inputs)
-                    Label("蒙版", systemImage: "paintbrush.pointed").tag(AppModel.WorkspaceTab.mask)
+            if model.mode != .textToImage {
+                HStack(spacing: 8) {
+                    BrandSegmented(
+                        selection: $model.workspaceTab,
+                        options: [
+                            .init(value: .preview, title: "作品", symbol: "photo"),
+                            .init(
+                                value: .inputs,
+                                title: model.mode.needsInitial ? "初始图" : "输入图\(model.conditions.isEmpty ? "" : " \(model.conditions.count)")",
+                                symbol: "photo.stack"),
+                        ] + (model.mode.needsMask ? [.init(value: .mask, title: "蒙版", symbol: "paintbrush.pointed")] : []))
+                    Spacer()
+                    if model.workspaceTab == .mask && model.mainImage != nil {
+                        Button("大画布", systemImage: "arrow.up.left.and.arrow.down.right") { openWindow(id: "mask") }
+                            .buttonStyle(.ghost)
+                            .help("在独立窗口中精细涂抹，返回后蒙版保留（⇧⌘K）")
+                    }
                 }
-                .pickerStyle(.segmented).labelsHidden().fixedSize()
-                Spacer()
-                if model.workspaceTab == .mask && model.mainImage != nil {
-                    Button("大画布", systemImage: "arrow.up.left.and.arrow.down.right") { openWindow(id: "mask") }
-                        .help("在独立窗口中精细涂抹，返回后蒙版保留")
+                .padding(.horizontal, Metrics.m).padding(.vertical, Metrics.s)
+            }
+            Group {
+                switch model.mode == .textToImage ? .preview : model.workspaceTab {
+                case .preview: PreviewPane()
+                case .inputs: InputsPane()
+                case .mask: MaskPane()
                 }
             }
-            .padding(.horizontal, 10).padding(.vertical, 8)
-            Divider()
-            switch model.workspaceTab {
-            case .preview: PreviewPane()
-            case .inputs: InputsPane()
-            case .mask: MaskPane()
-            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .background(Design.canvasBackground)
+        .background(Brand.canvas)
     }
 }
 
@@ -44,96 +51,232 @@ struct PreviewPane: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openWindow) private var openWindow
     @State private var zoom = ZoomState()
+    @AppStorage("showFilmstrip") private var showFilmstrip = true
 
     var body: some View {
         VStack(spacing: 0) {
+            if let item = model.selectedArtwork {
+                CanvasToolbar(item: item, zoom: $zoom, showFilmstrip: $showFilmstrip)
+            }
             ZStack {
                 if let item = model.selectedArtwork {
                     ZoomableImage(url: item.url, zoom: $zoom)
                         .contextMenu { ImageActionsMenu(item: item) }
                         .onTapGesture(count: 2) { openWindow(id: "viewer", value: item.url) }
-                } else {
-                    ContentUnavailableView {
-                        Label("还没有图像", systemImage: "sparkles")
-                    } description: {
-                        Text("在左侧填写提示词，按 ⌘↩ 开始生成")
-                    }
+                } else if model.live == nil {
+                    EmptyState(symbol: "sparkles", title: "作品会出现在这里", message: "写下提示词，按 ⌘↩ 生成")
                 }
-                VStack {
-                    if let live = model.live { LiveBadge(live: live).padding(.top, 10) }
-                    Spacer()
-                    if let item = model.selectedArtwork {
-                        PreviewToolbar(item: item, zoom: $zoom).padding(.bottom, 10)
+                if let live = model.live {
+                    ZStack {
+                        Brand.canvas.opacity(0.9)
+                        ProgressOverlay(live: live).padding(Metrics.xl)
                     }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .contentShape(Rectangle())
+                } else if let notice = model.canvasNotice {
+                    VStack {
+                        Spacer()
+                        NoticeOverlay(notice: notice).padding(Metrics.m)
+                    }
+                    .frame(maxWidth: .infinity)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            if !model.artworks.isEmpty { strip }
+            if showFilmstrip && !model.artworks.isEmpty { Filmstrip() }
         }
     }
+}
 
-    private var strip: some View {
+/// Collapsible strip of recent artworks under the canvas.
+struct Filmstrip: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
         ScrollView(.horizontal) {
             LazyHStack(spacing: 6) {
                 ForEach(model.artworks.prefix(40)) { item in
-                    Thumbnail(url: item.url, size: 48, corner: 6)
+                    let selected = item.url == model.selection
+                    Button { model.selection = item.url } label: {
+                        Thumbnail(url: item.url, size: 46, corner: 6)
                         .overlay(
-                            RoundedRectangle(cornerRadius: 6)
-                                .strokeBorder(item.url == model.selection ? Color.accentColor : .clear, lineWidth: 2))
-                        .onTapGesture { model.selection = item.url }
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .strokeBorder(selected ? Brand.fox : .clear, lineWidth: 2))
+                        .opacity(selected ? 1 : 0.85)
+                    }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(item.prompt ?? item.url.lastPathComponent)
+                        .accessibilityAddTraits(selected ? .isSelected : [])
                         .contextMenu { ImageActionsMenu(item: item) }
                         .help(item.prompt ?? item.url.lastPathComponent)
                 }
             }
-            .padding(.horizontal, 8).padding(.vertical, 6)
+            .padding(.horizontal, Metrics.m).padding(.vertical, 7)
         }
         .scrollIndicators(.never)
         .frame(height: 60)
-        .background(.bar)
+        .background(Brand.side)
+        .overlay(alignment: .top) { Rectangle().fill(Brand.hairline).frame(height: 1) }
     }
 }
 
-struct LiveBadge: View {
+/// Preview-only scrim, fed by runtime callbacks; the rest of the workbench stays interactive.
+struct ProgressOverlay: View {
+    @Environment(AppModel.self) private var model
     let live: LiveProgress
 
-    var body: some View {
-        HStack(spacing: 8) {
-            ProgressRing(fraction: live.overallFraction, lineWidth: 3).frame(width: 16, height: 16)
-            Text(live.stage == .denoising ? "去噪 \(live.step)/\(live.totalSteps)" : live.stageLabel)
-            if live.imageCount > 1 { Text("第 \(live.imageIndex + 1)/\(live.imageCount) 张").foregroundStyle(.secondary) }
-            if let r = live.remaining { Text("约 \(Format.duration(r))").foregroundStyle(.secondary) }
+    enum Phase: Int, CaseIterable {
+        case conditioning, denoising, decoding
+
+        var title: String {
+            switch self {
+            case .conditioning: "条件编码"
+            case .denoising: "DiT 去噪"
+            case .decoding: "VAE 解码"
+            }
         }
-        .font(.callout.monospacedDigit())
-        .padding(.horizontal, 14).padding(.vertical, 7)
-        .glassEffect(.regular, in: Capsule())
+
+        init(_ stage: GenerationStage) {
+            switch stage {
+            case .validating, .loadingTextEncoder, .encodingPrompt, .encodingImages, .loadingTransformer, .prefill:
+                self = .conditioning
+            case .denoising: self = .denoising
+            case .loadingVAE, .decoding, .done: self = .decoding
+            }
+        }
+    }
+
+    var body: some View {
+        let phase = Phase(live.stage)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                ForEach(Phase.allCases, id: \.self) { p in
+                    if p != .conditioning {
+                        Image(systemName: "chevron.right").font(.system(size: 8, weight: .bold)).foregroundStyle(Brand.textTertiary)
+                    }
+                    HStack(spacing: 4) {
+                        if p.rawValue < phase.rawValue {
+                            Image(systemName: "checkmark").font(.system(size: 9, weight: .bold))
+                        }
+                        Text(p.title)
+                    }
+                    .font(.caption.weight(p == phase ? .semibold : .regular))
+                    .foregroundStyle(p == phase ? Brand.foxText : p.rawValue < phase.rawValue ? Brand.textSecondary : Brand.textTertiary)
+                }
+            }
+            Text(live.stageLabel).font(.title3.weight(.semibold))
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                if phase == .denoising {
+                    Text("\(live.step) / \(live.totalSteps)").font(.title3.weight(.semibold)).monospacedDigit()
+                    Text("Steps").font(.caption).foregroundStyle(Brand.textSecondary)
+                }
+                if live.imageCount > 1 {
+                    Text("第 \(live.imageIndex + 1)/\(live.imageCount) 张").font(.caption).foregroundStyle(Brand.textSecondary)
+                }
+                Spacer(minLength: 8)
+                if let rate = live.secondsPerStep {
+                    Text(String(format: "%.2f s/step", rate)).font(.body.weight(.semibold)).monospacedDigit()
+                        .help("已完成去噪步的实测平均耗时")
+                } else {
+                    Text("等待首步测速").font(.caption).foregroundStyle(Brand.textSecondary)
+                }
+            }
+            ProgressBar(fraction: live.overallFraction)
+            HStack {
+                if phase == .denoising, let remaining = live.remaining {
+                    Text("去噪剩余约 \(Format.duration(remaining))").font(.caption).monospacedDigit().foregroundStyle(Brand.textSecondary)
+                        .help(live.secondsPerStep.map { String(format: "按实测 %.2f s/step 估计", $0) } ?? "")
+                }
+                Spacer(minLength: 8)
+                Button("取消生成", systemImage: "stop.fill") { model.stopCurrent() }
+                    .buttonStyle(SecondaryButtonStyle())
+                    .help("取消生成（⌘.）")
+            }
+        }
+        .frame(maxWidth: 380)
     }
 }
 
-/// Floating glass toolbar over the preview.
-struct PreviewToolbar: View {
+/// Failure or cancellation of the last task, shown in the canvas until dismissed.
+struct NoticeOverlay: View {
+    @Environment(AppModel.self) private var model
+    let notice: AppModel.CanvasNotice
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: notice.failed ? "xmark.octagon.fill" : "minus.circle.fill")
+                .foregroundStyle(notice.failed ? Brand.danger : Brand.textSecondary)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(notice.title).font(.callout.weight(.semibold))
+                if let detail = notice.detail {
+                    Text(detail).font(.caption).foregroundStyle(Brand.textSecondary).lineLimit(3).textSelection(.enabled)
+                }
+            }
+            Spacer(minLength: 8)
+            if notice.failed {
+                Button("任务") { model.managementTab = .tasks }.buttonStyle(.ghost).font(.caption)
+            }
+            Button {
+                model.canvasNotice = nil
+            } label: {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.ghost).help("关闭")
+        }
+        .padding(12)
+        .frame(maxWidth: 380)
+        .background(Brand.paper, in: RoundedRectangle(cornerRadius: Metrics.radiusL, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Metrics.radiusL, style: .continuous)
+            .strokeBorder(notice.failed ? Brand.danger.opacity(0.4) : Brand.hairline))
+        .shadow(color: .black.opacity(0.12), radius: 10, y: 3)
+    }
+}
+
+/// Compact canvas tools stay outside the artwork so keyboard users can reach them without hovering.
+struct CanvasToolbar: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openWindow) private var openWindow
     let item: Artwork
     @Binding var zoom: ZoomState
+    @Binding var showFilmstrip: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        HStack(spacing: 4) {
-            ZoomControls(zoom: $zoom)
-            Divider().frame(height: 16)
-            Button("收藏", systemImage: model.favorites.contains(item.url.path) ? "star.fill" : "star") { model.toggleFavorite(item) }
-            Button("复用参数", systemImage: "arrow.uturn.backward") { model.reuse(item) }.disabled(!item.isReusable)
-            Button("放大查看", systemImage: "arrow.up.left.and.arrow.down.right") { openWindow(id: "viewer", value: item.url) }
+        HStack(spacing: 2) {
+            Text("作品").font(TypeScale.section).foregroundStyle(Brand.textSecondary)
+            Spacer(minLength: 4)
+            Menu {
+                Button("适配窗口") { zoom.scale = nil }
+                Button("100% 像素") { zoom.scale = 1 }
+                Divider()
+                Button("放大") { zoom.scale = min((zoom.scale ?? 0.5) * 1.5, 8) }
+                Button("缩小") { zoom.scale = max((zoom.scale ?? 0.5) / 1.5, 0.05) }
+            } label: {
+                Text(zoom.scale.map { "\(Int($0 * 100))%" } ?? "适配").font(.caption).monospacedDigit()
+            }
+            .menuStyle(.borderlessButton).fixedSize()
+            .padding(.horizontal, 7)
+            .accessibilityLabel("画布缩放")
+            Button("复制图像", systemImage: "doc.on.doc") { ImageFileActions.copyImage(item.url) }
+                .help("复制图像")
+            Button("另存为", systemImage: "square.and.arrow.down") { ImageFileActions.saveAs(item, settings: model.exportSettings) }
+                .help("另存为…")
+            Button("胶片栏", systemImage: showFilmstrip ? "rectangle.bottomthird.inset.filled" : "rectangle") {
+                withAnimation(reduceMotion ? nil : .snappy(duration: 0.2)) { showFilmstrip.toggle() }
+            }
+            .help(showFilmstrip ? "收起胶片栏" : "显示胶片栏")
+            .accessibilityValue(showFilmstrip ? "已展开" : "已收起")
             Menu {
                 ImageActionsMenu(item: item)
             } label: {
                 Image(systemName: "ellipsis")
             }
             .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+            .padding(.horizontal, 5)
+            .accessibilityLabel("作品操作")
         }
         .labelStyle(.iconOnly)
-        .buttonStyle(.borderless)
-        .padding(.horizontal, 10).padding(.vertical, 6)
-        .glassEffect(.regular, in: Capsule())
+        .buttonStyle(.ghost)
+        .padding(.horizontal, Metrics.m).padding(.vertical, 4)
     }
 }
 
@@ -152,9 +295,10 @@ struct ZoomControls: View {
             Button("缩小", systemImage: "minus.magnifyingglass") { zoom.scale = max((zoom.scale ?? 0.5) / 1.5, 0.05) }
             Button("放大", systemImage: "plus.magnifyingglass") { zoom.scale = min((zoom.scale ?? 0.5) * 1.5, 8) }
             Text(zoom.scale.map { "\(Int($0 * 100))%" } ?? "适配").font(.caption).monospacedDigit().frame(width: 38)
+                .foregroundStyle(Brand.textSecondary)
         }
         .labelStyle(.iconOnly)
-        .buttonStyle(.borderless)
+        .buttonStyle(.ghost)
     }
 }
 
@@ -170,7 +314,7 @@ struct ZoomableImage: View {
         GeometryReader { geo in
             if let image, let rep = image.representations.first {
                 let pixels = CGSize(width: rep.pixelsWide, height: rep.pixelsHigh)
-                let fit = min(geo.size.width / pixels.width, geo.size.height / pixels.height) * displayScale
+                let fit = min(max(geo.size.width - 40, 40) / pixels.width, max(geo.size.height - 40, 40) / pixels.height) * displayScale
                 let scale = zoom.scale ?? fit
                 let size = CGSize(width: pixels.width * scale / displayScale, height: pixels.height * scale / displayScale)
                 ScrollView([.horizontal, .vertical]) {
@@ -178,7 +322,8 @@ struct ZoomableImage: View {
                         .resizable()
                         .interpolation(scale >= 2 ? .none : .high)
                         .frame(width: size.width, height: size.height)
-                        .shadow(color: .black.opacity(0.18), radius: 10, y: 3)
+                        .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+                        .shadow(color: .black.opacity(0.22), radius: 14, y: 5)
                         .frame(minWidth: geo.size.width, minHeight: geo.size.height)
                 }
                 .scrollIndicators(zoom.scale == nil ? .hidden : .automatic)
@@ -208,11 +353,7 @@ struct InputsPane: View {
     var body: some View {
         Group {
             if model.mode == .textToImage {
-                ContentUnavailableView {
-                    Label("文生图不使用输入图", systemImage: "text.below.photo")
-                } description: {
-                    Text("在右下切换到参考图创作、图生图、图像编辑或局部重绘后在这里添加图片")
-                }
+                EmptyState(symbol: "text.below.photo", title: "文生图不使用输入图", message: "在左侧切换到参考图创作、图生图、图像编辑或局部重绘")
             } else if model.mode.needsInitial {
                 initialPane
             } else {
@@ -222,7 +363,7 @@ struct InputsPane: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .overlay {
             if targeted {
-                RoundedRectangle(cornerRadius: Design.corner).strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [6]))
+                RoundedRectangle(cornerRadius: Design.corner).strokeBorder(Brand.fox, style: StrokeStyle(lineWidth: 2, dash: [6]))
                     .padding(8)
             }
         }
@@ -243,22 +384,22 @@ struct InputsPane: View {
         VStack(spacing: 0) {
             HStack {
                 Text(model.mode == .reference ? "参考图（按顺序作为 图 1、图 2…）" : "第 1 张为主图，其余为附加参考")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption).foregroundStyle(Brand.textSecondary)
                 Spacer()
                 Text("\(model.conditions.count)/10").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 Button("添加…", systemImage: "plus") { model.importConditions(urls: ImageFileActions.chooseImages()) }
                 Button("粘贴", systemImage: "doc.on.clipboard") { model.pasteConditions() }
                 Button("清空", systemImage: "trash") { model.conditions.removeAll() }.disabled(model.conditions.isEmpty)
             }
-            .labelStyle(.iconOnly).buttonStyle(.borderless)
+            .labelStyle(.iconOnly).buttonStyle(.ghost)
             .padding(.horizontal, 10).padding(.vertical, 6)
             if model.conditions.isEmpty {
-                ContentUnavailableView {
-                    Label("拖入或粘贴图片", systemImage: "square.and.arrow.down.on.square")
-                } description: {
-                    Text("支持 Finder 拖放、⌘V 粘贴、从图库「送去创作」。最多 10 张。")
-                } actions: {
+                VStack(spacing: 0) {
+                    EmptyState(symbol: "square.and.arrow.down.on.square", title: "拖入或粘贴图片", message: "支持 Finder 拖放、⌘V 粘贴、从图库「送去创作」，最多 10 张")
+                        .frame(maxHeight: 220)
                     Button("选择图片…") { model.importConditions(urls: ImageFileActions.chooseImages()) }
+                        .buttonStyle(SecondaryButtonStyle())
+                    Spacer()
                 }
             } else {
                 List {
@@ -284,13 +425,10 @@ struct InputsPane: View {
                 }
                 .controlSize(.small)
             } else {
-                ContentUnavailableView {
-                    Label("添加初始图", systemImage: "photo.on.rectangle.angled")
-                } description: {
-                    Text("图像作为初始状态，按强度加噪后重绘。拖入、粘贴或选择一张图片。")
-                } actions: {
-                    Button("选择图片…") { if let url = ImageFileActions.chooseImages(multiple: false).first { model.setInitial(url: url) } }
-                }
+                EmptyState(symbol: "photo.on.rectangle.angled", title: "添加初始图", message: "图像作为初始状态，按强度加噪后重绘。拖入、粘贴或选择一张图片。")
+                    .frame(maxHeight: 220)
+                Button("选择图片…") { if let url = ImageFileActions.chooseImages(multiple: false).first { model.setInitial(url: url) } }
+                    .buttonStyle(SecondaryButtonStyle())
             }
         }
         .padding()
@@ -310,7 +448,7 @@ struct InputRow: View {
                 HStack(spacing: 6) {
                     if index == 0 && model.mode != .reference {
                         Text("主图").font(.caption2.weight(.bold)).padding(.horizontal, 5).padding(.vertical, 1)
-                            .background(.tint, in: Capsule()).foregroundStyle(.white)
+                            .background(Brand.fox, in: Capsule()).foregroundStyle(.white)
                     } else {
                         Text("图 \(index + 1)").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
                     }
@@ -363,11 +501,7 @@ struct MaskPane: View {
                 MaskCanvas(image: main)
             }
         } else {
-            ContentUnavailableView {
-                Label("蒙版需要一张主图", systemImage: "paintbrush.pointed")
-            } description: {
-                Text("切换到局部重绘，在「输入图」中添加要重绘的图片，或从图库「送去创作 → 局部重绘」。")
-            }
+            EmptyState(symbol: "paintbrush.pointed", title: "蒙版需要一张主图", message: "在「输入图」中添加要重绘的图片，或从图库「送去创作 → 局部重绘」")
         }
     }
 }
@@ -423,10 +557,10 @@ struct MaskToolbar: View {
                 }
                 .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
             }
-            .labelStyle(.iconOnly).buttonStyle(.borderless)
+            .labelStyle(.iconOnly).buttonStyle(.ghost)
         }
         .padding(.horizontal, 10).padding(.vertical, 6)
-        .background(.bar)
+        .background(Brand.side)
         .fileImporter(isPresented: $importing, allowedContentTypes: [.image]) { result in
             if case .success(let url) = result, let image = try? RGBAImage(contentsOf: url) { model.mask.load(image) }
         }
@@ -518,7 +652,7 @@ struct MaskCanvas: View {
                     Button("放大", systemImage: "plus.magnifyingglass") { zoom = min(zoom * 1.4, 8) }
                     Button("适配", systemImage: "arrow.down.right.and.arrow.up.left") { zoom = 1 }
                 }
-                .labelStyle(.iconOnly).buttonStyle(.borderless)
+                .labelStyle(.iconOnly).buttonStyle(.ghost)
                 .padding(.horizontal, 10).padding(.vertical, 5)
                 .glassEffect(.regular, in: Capsule())
                 .padding(10)
