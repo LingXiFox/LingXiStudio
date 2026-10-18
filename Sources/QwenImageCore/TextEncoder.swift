@@ -140,8 +140,9 @@ final class QwenTextEncoder: ParameterContainer {
     /// Qwen-Image-2.1 conditions on the last decoder layer output *before* the final RMSNorm
     /// (see the reference pipeline); `applyFinalNorm` exists only for A/B diagnostics.
     func callAsFunction(
-        _ ids: [Int], vision: VisionInput? = nil, applyFinalNorm: Bool = false, evalEachLayer: Bool = true
-    ) -> MLXArray {
+        _ ids: [Int], vision: VisionInput? = nil, applyFinalNorm: Bool = false, evalEachLayer: Bool = true,
+        checkCancelled: () throws -> Void = {}
+    ) rethrows -> MLXArray {
         let length = ids.count
         // The residual stream is kept in fp32: activations reach the thousands, where bf16 accumulation
         // drifts measurably from an fp32 reference. Matmuls and attention still run in bf16.
@@ -154,6 +155,7 @@ final class QwenTextEncoder: ParameterContainer {
         let scale = 1 / Float(c.headDim).squareRoot()
         let tables = vision.map { mropeTables($0.positions) }
         for (index, layer) in layers.enumerated() {
+            try checkCancelled()
             let residual = hidden
             let x = rmsNorm(hidden, layer.inputNorm).asType(dtype)
             var q = layer.q(x).reshaped(1, length, c.heads, c.headDim)

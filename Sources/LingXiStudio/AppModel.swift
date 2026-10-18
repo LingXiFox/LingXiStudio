@@ -66,6 +66,7 @@ final class AppModel {
 
     var tasks: [TaskRecord] = [] { didSet { saveTasks() } }
     var live: LiveProgress?
+    private(set) var cancellationRequested = false
     var canvasNotice: CanvasNotice?
     var artworks: [Artwork] = []
     var favorites: Set<String> = [] { didSet { save() } }
@@ -406,6 +407,9 @@ final class AppModel {
     func cancel(_ id: UUID) {
         guard let index = tasks.firstIndex(where: { $0.id == id }) else { return }
         if id == runningTaskID {
+            guard !cancellationRequested else { return }
+            cancellationRequested = true
+            AppLog.write("task \(id) cancellation requested")
             engine.cancel()
         } else if tasks[index].status == .waiting {
             tasks[index].status = .cancelled
@@ -436,6 +440,7 @@ final class AppModel {
         }
         tasks[index] = task
         runningTaskID = task.id
+        cancellationRequested = false
         modelStatus = .inUse
         residency = [:]
         var records = task.conditions.map { $0.record(role: .condition) }
@@ -464,6 +469,9 @@ final class AppModel {
             tasks[index].log.append("第 \(imageIndex + 1)/\(imageCount) 张开始，seed \(seed)")
             lastSeed = seed
         case .progress(let imageIndex, let p):
+            if live?.stage != p.stage {
+                AppLog.write("task \(taskID) image \(imageIndex) stage=\(p.stage.rawValue) elapsed=\(p.elapsed)")
+            }
             live = LiveProgress(
                 taskID: taskID, imageIndex: imageIndex, imageCount: imageCount, stage: p.stage, fraction: p.fraction,
                 step: p.step, totalSteps: p.totalSteps, secondsPerStep: p.secondsPerStep, elapsed: p.elapsed,
@@ -480,6 +488,7 @@ final class AppModel {
             selection = url
             if workspaceTab != .preview && !mode.needsMask { workspaceTab = .preview }
         case .finished(let result):
+            AppLog.write("task \(taskID) finished: \(result)")
             switch result {
             case .success: tasks[index].status = .done
             case .failure(PipelineError.cancelled):
@@ -495,6 +504,7 @@ final class AppModel {
             }
             tasks[index].finishedAt = Date()
             runningTaskID = nil
+            cancellationRequested = false
             live = nil
             residency = residency.mapValues { $0 == .notLoaded ? .notLoaded : .released }
             if modelStatus == .inUse { modelStatus = .ready }

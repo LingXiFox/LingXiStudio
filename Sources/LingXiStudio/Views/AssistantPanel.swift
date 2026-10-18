@@ -457,7 +457,8 @@ struct TaskRow: View {
                     Spacer()
                     Group {
                         if task.status == .running || task.status == .waiting {
-                            Button("取消") { model.cancel(task.id) }
+                            Button(task.status == .running && model.cancellationRequested ? "正在停止…" : "取消") { model.cancel(task.id) }
+                                .disabled(task.status == .running && model.cancellationRequested)
                         } else {
                             Button("重新生成") { model.retry(task.id) }.help("保留参数重新生成")
                         }

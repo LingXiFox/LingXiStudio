@@ -12,8 +12,8 @@ Date: 2026-10-18. Base commit: `6703050` plus the existing, uncommitted native U
 - Segmented controls use a thin fox-orange keyboard focus outline in place of the system blue ring. Reduce Motion disables their selection animation and progress interpolation.
 - Canvas tools are compact and outside the artwork. Filmstrip visibility stays reachable during generation; thumbnails are keyboard-accessible buttons.
 - LoRA rows reserve a line for the name and keep enable / scale controls compact. Rank, target count, file size and coverage are available in the action menu and tooltip.
-- Generation places a translucent, static scrim over the preview only. It displays actual stage, step count, measured average s/step, denoising ETA and cancellation. It retains the previous final image until the new final image arrives. There is no intermediate decode or new GPU work for previews.
-- Global resources, performance policy and diagnostics stay in Settings / Runtime Inspector. No core model, sampler, precision or LoRA execution source changed.
+- Generation covers the preview with an opaque canvas during preparation and generation, following the user's later request to hide the previous artwork. It displays actual stage, step count, measured average s/step, denoising ETA and cancellation. Cancellation restores the selected completed artwork. There is no intermediate decode or new GPU work for previews.
+- Global resources, performance policy and diagnostics stay in Settings / Runtime Inspector. The initial UI iteration changed no core execution source; the cancellation follow-up adds checks at existing weight-loading batches and text-encoder layer boundaries without adding evaluations or changing precision, sampling or LoRA operations.
 
 ## Verification
 
@@ -37,6 +37,8 @@ Date: 2026-10-18. Base commit: `6703050` plus the existing, uncommitted native U
 
 The image comparison used the same ImageIO / CoreGraphics RGBA rendering for both files. SHA-256:
 `ef3aaad4f284a8c95f26781a25e3ec7b9188fb75063dd36021b2fa5c917fd229`.
+
+Follow-up cancellation checks: 11 XCTest cases passed with zero failures, including cancellation before loading, between existing loading batches and between existing text-encoder layer evaluations. One-click UI acknowledgement, the opaque canvas and the reported condition-encoding stutter still require a new manual run; the older screenshots and image comparison above do not verify this follow-up.
 
 Compared outputs:
 

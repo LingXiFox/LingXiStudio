@@ -59,20 +59,29 @@ struct PreviewPane: View {
                 CanvasToolbar(item: item, zoom: $zoom, showFilmstrip: $showFilmstrip)
             }
             ZStack {
-                if let item = model.selectedArtwork {
+                if let item = model.selectedArtwork, !model.isRunning {
                     ZoomableImage(url: item.url, zoom: $zoom)
                         .contextMenu { ImageActionsMenu(item: item) }
                         .onTapGesture(count: 2) { openWindow(id: "viewer", value: item.url) }
-                } else if model.live == nil {
+                } else if !model.isRunning {
                     EmptyState(symbol: "sparkles", title: "作品会出现在这里", message: "写下提示词，按 ⌘↩ 生成")
                 }
                 if let live = model.live {
                     ZStack {
-                        Brand.canvas.opacity(0.9)
+                        Brand.canvas
                         ProgressOverlay(live: live).padding(Metrics.xl)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .contentShape(Rectangle())
+                } else if model.isRunning {
+                    VStack(spacing: Metrics.m) {
+                        Text(model.cancellationRequested ? "正在停止…" : "准备生成…")
+                        Button(model.cancellationRequested ? "正在停止…" : "取消生成", systemImage: "stop.fill") { model.stopCurrent() }
+                            .buttonStyle(SecondaryButtonStyle())
+                            .disabled(model.cancellationRequested)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Brand.canvas)
                 } else if let notice = model.canvasNotice {
                     VStack {
                         Spacer()
@@ -163,7 +172,11 @@ struct ProgressOverlay: View {
                     .foregroundStyle(p == phase ? Brand.foxText : p.rawValue < phase.rawValue ? Brand.textSecondary : Brand.textTertiary)
                 }
             }
-            Text(live.stageLabel).font(.title3.weight(.semibold))
+            Text(model.cancellationRequested ? "正在停止…" : live.stageLabel).font(.title3.weight(.semibold))
+            if model.cancellationRequested {
+                Text("停止请求已收到，等待当前 GPU 计算完成")
+                    .font(.caption).foregroundStyle(Brand.textSecondary)
+            }
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 if phase == .denoising {
                     Text("\(live.step) / \(live.totalSteps)").font(.title3.weight(.semibold)).monospacedDigit()
@@ -187,8 +200,9 @@ struct ProgressOverlay: View {
                         .help(live.secondsPerStep.map { String(format: "按实测 %.2f s/step 估计", $0) } ?? "")
                 }
                 Spacer(minLength: 8)
-                Button("取消生成", systemImage: "stop.fill") { model.stopCurrent() }
+                Button(model.cancellationRequested ? "正在停止…" : "取消生成", systemImage: "stop.fill") { model.stopCurrent() }
                     .buttonStyle(SecondaryButtonStyle())
+                    .disabled(model.cancellationRequested)
                     .help("取消生成（⌘.）")
             }
         }

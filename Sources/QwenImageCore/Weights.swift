@@ -72,10 +72,11 @@ protocol ParameterContainer {
 
 extension ParameterContainer {
     /// Reads all weights from disk now instead of on first use, so loading progress and memory are explicit.
-    func materialize(batch: Int = 16, progress: ((Double) -> Void)? = nil) {
+    func materialize(batch: Int = 16, checkCancelled: () throws -> Void = {}, progress: ((Double) -> Void)? = nil) rethrows {
         let all = parameters
         var index = 0
         while index < all.count {
+            try checkCancelled()
             let end = min(index + batch, all.count)
             eval(Array(all[index..<end]))
             index = end

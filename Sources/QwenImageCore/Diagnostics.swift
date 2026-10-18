@@ -13,7 +13,7 @@ public enum Diagnostics {
         let pipeline = try QwenImagePipeline(model: model)
         let tokens = try pipeline.promptTokens(prompt)
         let encoder = try QwenTextEncoder(store: WeightStore(directory: model.textEncoder, component: "text_encoder"))
-        let hidden = encoder(tokens.ids)
+        let hidden = try encoder(tokens.ids)
         try save(
             arrays: [
                 "hidden": hidden.asType(.float32),
@@ -31,7 +31,7 @@ public enum Diagnostics {
         var traced: [String: MLXArray] = [:]
         let vision = try QwenVisionEncoder(store: store).encode(image) { traced["v_\($0)"] = $1.asType(.float32) }
         let encoder = try QwenTextEncoder(store: store)
-        let hidden = encoder(
+        let hidden = try encoder(
             mp.ids,
             vision: .init(embeds: vision.embeds, deepstack: vision.deepstack, ranges: mp.imageRanges, positions: mp.positions))
         var arrays: [String: MLXArray] = [
@@ -52,7 +52,7 @@ public enum Diagnostics {
     ) {
         let transformer = try QwenImageTransformer(
             store: WeightStore(directory: model.transformer, component: "transformer"))
-        transformer.materialize()
+        try transformer.materialize()
         let stack = LoRAStack()
         for spec in loras { try stack.load(spec) }
         try transformer.bind(stack)

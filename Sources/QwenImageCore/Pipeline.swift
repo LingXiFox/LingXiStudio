@@ -314,8 +314,9 @@ public final class QwenImagePipeline: @unchecked Sendable {
             if !plan.conditions.isEmpty {
                 try autoreleasepool {
                     let tower = try QwenVisionEncoder(store: store)
-                    tower.materialize()
+                    try tower.materialize(checkCancelled: checkCancelled)
                     for image in plan.conditions {
+                        try checkCancelled()
                         let out = tower.encode(image)
                         eval([out.embeds] + out.deepstack)
                         vision.append(out)
@@ -324,7 +325,7 @@ public final class QwenImagePipeline: @unchecked Sendable {
                 releaseStageMemory()
             }
             let encoder = try QwenTextEncoder(store: store)
-            encoder.materialize { report(.loadingTextEncoder, $0) }
+            try encoder.materialize(checkCancelled: checkCancelled) { report(.loadingTextEncoder, $0) }
             finish(.loadingTextEncoder)
             try checkCancelled()
 
@@ -341,8 +342,10 @@ public final class QwenImagePipeline: @unchecked Sendable {
                         ranges: ranges, positions: positions)
                 }
             for prompt in prompts {
-                let hidden = encoder(
-                    prompt.ids, vision: prompt.positions.flatMap { p in visionInput?(p, prompt.ranges) })
+                try checkCancelled()
+                let hidden = try encoder(
+                    prompt.ids, vision: prompt.positions.flatMap { p in visionInput?(p, prompt.ranges) },
+                    checkCancelled: checkCancelled)
                 let embedding = hidden[0..., prompt.drop...]
                 eval(embedding)
                 encoded.append(
@@ -364,13 +367,15 @@ public final class QwenImagePipeline: @unchecked Sendable {
                 let encoder = try QwenImageVAEEncoder(
                     store: WeightStore(directory: model.vae, component: "vae"),
                     configURL: model.vae.appending(path: "config.json"))
-                encoder.materialize()
+                try encoder.materialize(checkCancelled: checkCancelled)
                 for image in plan.conditions {
+                    try checkCancelled()
                     let latents = encoder.encode(image.vaeInput()).asType(.bfloat16)
                     eval(latents)
                     conditionLatents.append(.init(latents: latents, height: image.height / 16, width: image.width / 16))
                 }
                 if let initial = plan.initial {
+                    try checkCancelled()
                     let latents = encoder.encode(initial.vaeInput()).asType(.bfloat16)
                     eval(latents)
                     initialLatents = latents
@@ -393,10 +398,13 @@ public final class QwenImagePipeline: @unchecked Sendable {
         try autoreleasepool {
             let transformer = try QwenImageTransformer(
                 store: WeightStore(directory: model.transformer, component: "transformer"))
-            transformer.materialize { report(.loadingTransformer, $0) }
+            try transformer.materialize(checkCancelled: checkCancelled) { report(.loadingTransformer, $0) }
             // LoRA factors stay separate from the base weights and are applied on the fly.
             let loras = LoRAStack()
-            for spec in request.loras { try loras.load(spec) }
+            for spec in request.loras {
+                try checkCancelled()
+                try loras.load(spec)
+            }
             try transformer.bind(loras)
             finish(.loadingTransformer)
             try checkCancelled()
@@ -404,6 +412,7 @@ public final class QwenImagePipeline: @unchecked Sendable {
             report(.prefill, 0)
             var caches: [(QwenImageTransformer.TextCache, QwenImageTransformer.Rope)] = []
             for item in encoded {
+                try checkCancelled()
                 let layout = transformer.layout(
                     textLength: item.embedding.dim(1), imageRanges: item.imageRanges,
                     conditions: conditionLatents.map { ($0.height, $0.width) }, latentHeight: latentHeight,
@@ -454,8 +463,9 @@ public final class QwenImagePipeline: @unchecked Sendable {
             let vae = try QwenImageVAEDecoder(
                 store: WeightStore(directory: model.vae, component: "vae"),
                 configURL: model.vae.appending(path: "config.json"), dtype: .float32)
-            vae.materialize { report(.loadingVAE, $0) }
+            try vae.materialize(checkCancelled: checkCancelled) { report(.loadingVAE, $0) }
             finish(.loadingVAE)
+            try checkCancelled()
 
             report(.decoding, 0)
             let image = vae.decode(latents, latentHeight: latentHeight, latentWidth: latentWidth)
@@ -466,6 +476,7 @@ public final class QwenImagePipeline: @unchecked Sendable {
             eval(pixels)
             return pixels
         }
+        try checkCancelled()
         let rgba = pixels.asArray(UInt8.self)
         releaseStageMemory()
         finish(.decoding)

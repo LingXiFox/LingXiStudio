@@ -115,9 +115,9 @@ struct WorkbenchCommands: Commands {
             Button("加入队列并生成") { model.enqueue() }
                 .keyboardShortcut(.return, modifiers: .command)
                 .disabled(!model.blockingIssues.isEmpty)
-            Button("停止当前任务") { model.stopCurrent() }
+            Button(model.cancellationRequested ? "正在停止…" : "停止当前任务") { model.stopCurrent() }
                 .keyboardShortcut(".", modifiers: .command)
-                .disabled(!model.isRunning)
+                .disabled(!model.isRunning || model.cancellationRequested)
             Divider()
             Button("清空等待中的任务") { model.clearWaiting() }
                 .disabled(model.waitingCount == 0)

@@ -319,8 +319,9 @@ struct GenerateBar: View {
             .lineLimit(1)
             Spacer(minLength: Metrics.s)
             if model.isRunning {
-                Button("停止", systemImage: "stop.fill") { model.stopCurrent() }
+                Button(model.cancellationRequested ? "正在停止…" : "停止", systemImage: "stop.fill") { model.stopCurrent() }
                     .buttonStyle(SecondaryButtonStyle())
+                    .disabled(model.cancellationRequested)
                     .keyboardShortcut(".", modifiers: .command)
                     .help("停止当前任务（⌘.）")
             }
