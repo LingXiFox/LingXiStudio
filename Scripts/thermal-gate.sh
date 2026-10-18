@@ -12,6 +12,7 @@ spacing=${GATE_SPACING:-30}
 waited=0; streak=0
 while true; do
   line=$($probe probe)
+  echo "gate probe after ${waited}s: $line" >&2
   state=$(echo "$line" | awk '{print $2}'); tflops=$(echo "$line" | awk '{print $4}')
   if [[ $state == nominal ]] && (( $(echo "$tflops >= $gate" | bc -l) )); then
     streak=$((streak + 1))

@@ -386,6 +386,12 @@ extension Diagnostics {
     public static func benchTransformer(
         model: ModelDirectory, width: Int, height: Int, textLength: Int, steps: Int, loras: [LoRASpec]
     ) throws -> (steps: [Double], footprint: Int, mlxPeak: Int) {
+        let cacheLimit = Memory.cacheLimit
+        if ProcessInfo.processInfo.environment["LINGXI_DIT_CACHE"] != "0" {
+            Memory.cacheLimit = min(cacheLimit, 512 << 20)
+        }
+        defer { Memory.cacheLimit = cacheLimit }
+        print("DiT idle cache limit: \(Memory.cacheLimit) bytes")
         let (transformer, _) = try loadTransformer(model, loras: loras)
         let (lh, lw) = (height / 16, width / 16)
         let embeds = (MLXRandom.normal([1, textLength, 4096], key: MLXRandom.key(5)) * 4).asType(.bfloat16)

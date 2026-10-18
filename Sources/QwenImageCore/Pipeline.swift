@@ -421,6 +421,11 @@ public final class QwenImagePipeline: @unchecked Sendable {
         }
         // Keep Swift parameter lifetimes inside a separate frame as well as draining Metal autoreleases.
         @inline(never) func runTransformer() throws {
+            let cacheLimit = Memory.cacheLimit
+            if ProcessInfo.processInfo.environment["LINGXI_DIT_CACHE"] != "0" {
+                Memory.cacheLimit = min(cacheLimit, 512 << 20)
+            }
+            defer { Memory.cacheLimit = cacheLimit }
             let transformer = try QwenImageTransformer(
                 store: WeightStore(directory: model.transformer, component: "transformer"))
             defer { transformer.discardCompiledStep() }
@@ -446,6 +451,9 @@ public final class QwenImagePipeline: @unchecked Sendable {
                 let cache = transformer.prefill(
                     text: item.embedding, conditions: conditionLatents, imageRanges: item.imageRanges, layout: layout)
                 eval(cache.arrays + [layout.target.cos, layout.target.sin])
+                if ProcessInfo.processInfo.environment["LINGXI_TRACE_LAYOUT"] == "1" {
+                    print("conditioning layout: embedding \(item.embedding.dim(1)) tokens, image slots \(item.imageRanges.map(\.count)), prefix \(cache.textLength), target \(imageTokens), KV \(cache.arrays.reduce(0) { $0 + $1.nbytes }) bytes")
+                }
                 caches.append((cache, layout.target))
             }
             encoded.removeAll()

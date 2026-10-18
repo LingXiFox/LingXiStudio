@@ -59,6 +59,8 @@ open dist/LingXiStudio.app
 - 作品适配/100%/缩放/平移、独立查看器、复制与另存为、PNG/JPEG/TIFF 导出及移至废纸篓。
 - 暖奶白/暖炭黑主题、点击空白取消输入焦点、自定义键盘焦点指示、提示词与生成预设。
 
+LoRA 支持 `transformer.`、`diffusion_model.` 及 packed `gate_up` 映射，保留原始因子 dtype 和 per-layer alpha；动态叠加后返回基础投影的 BF16 dtype，基础权重不烘焙。DiT 阶段将空闲缓冲缓存限制到 512 MiB，退出时恢复旧值；不裁剪活跃张量或参考图 Token。
+
 文本条件采用全精度逐层加载，并保留最近一组条件的无损 CPU Embedding 缓存（最多 128 MiB）。同一模型、提示词、参考图和文本计算配置下，只修改 Seed 会复用条件，跳过视觉/文本编码器。缓存不跨 App 重启；超限时重新计算。
 缓存校验准备后的参考图实际像素与顺序、提示词、CFG 分支、模型文件身份及配置内容，不依赖输入路径或历史哈希。模型权重被替换或修改时失效；生成期间模型变化会报错。详见[加载、缓存与性能实测](docs/conditioning-performance.md)。
 
@@ -90,14 +92,15 @@ bin_dir="$(swift build -c release --show-bin-path)"
 
 ```bash
 mkdir -p .tmp
-swift test -c release --parallel --num-workers 2 --skip HardwareConditioningTests --xunit-output .tmp/tests.xml
+swift test -c release --parallel --num-workers 2 --skip Hardware --xunit-output .tmp/tests.xml
 ```
 
-常规 XCTest 有 16 项，覆盖蒙版、输出元数据、点击空白、加载/层间取消、逐层编码字节对齐及缓存失效。另有 2 项显式启用的真实模型测试；它们串行等待温控门限，分别验证纯文本和参考图缓存的完整 6 步结果，不能用默认跳过代替通过。启用命令见[实测报告](docs/conditioning-performance.md)。
+常规 XCTest 有 20 项，覆盖蒙版、输出元数据、点击空白、加载/层间取消、逐层编码字节对齐及缓存失效。另有文本/参考条件缓存的 2 项及多 LoRA 的 1 项显式启用真实模型测试；它们串行等待温控门限，分别验证纯文本和参考图缓存的完整 6 步结果，不能用默认跳过代替通过。多 LoRA 用例在同一进程验证八次完整生成的像素和资源释放；启用命令见[多 LoRA 实测](docs/multi-lora-reference-performance.md)及[条件缓存实测](docs/conditioning-performance.md)。
 [分阶段数值对齐脚本](Tests/Parity/run.sh) 是开发用工具，需要单独准备 Python/PyTorch 参考环境；正常推理不需要这些依赖。
 
 | 证据 | 已验证范围 |
 |---|---|
+| [多 LoRA 与参考图优化](docs/multi-lora-reference-performance.md) | 格式校验、动态四 LoRA 压力、温控失败记录、Kernel 采样及像素/释放回归 |
 | [工作台验收](docs/workbench-acceptance.md) | 五种模式、CLI/手动 App 测试及四点温控记录 |
 | [GUI 验收](docs/gui-design-acceptance.md) | 界面交互、原生图标、取消和后续调整；明确列出尚未实测的项 |
 | [加载与条件缓存](docs/conditioning-performance.md) | Batch 4/8/16、全精度逐层加载、缓存逐字节对齐及 Metal 轨迹 |

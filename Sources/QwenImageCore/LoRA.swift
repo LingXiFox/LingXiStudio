@@ -18,12 +18,14 @@ public struct LoRASpec: Codable, Sendable, Hashable {
 
 public enum LoRAError: Error, CustomStringConvertible {
     case unreadable(String)
+    case malformed(file: String, reason: String)
     case unmatched(file: String, keys: [String])
     case shapeMismatch(file: String, key: String, base: [Int], adapter: [Int])
     case unknownAdapter(UUID)
 
     public var description: String {
         switch self {
+        case .malformed(let file, let reason): "Invalid LoRA \(file): \(reason)"
         case .unreadable(let file): "LoRA file unreadable: \(file)"
         case .unmatched(let file, let keys):
             "LoRA \(file) targets \(keys.count) layer(s) this model does not have, e.g. \(keys.prefix(3).joined(separator: ", "))"
@@ -60,13 +62,48 @@ public final class LoRAAdapter: @unchecked Sendable {
         }
         let peftAlpha = Self.peftAlpha(metadata)
         var targets: [String: Factors] = [:]
-        for key in arrays.keys where key.hasSuffix(".lora_A.weight") {
+        let factorKeys = arrays.keys.filter { $0.hasSuffix(".lora_A.weight") || $0.hasSuffix(".lora_B.weight") }
+        guard !factorKeys.isEmpty else { throw LoRAError.malformed(file: path, reason: "No PEFT LoRA factors found") }
+        let knownKeys = Set(factorKeys + factorKeys.filter { $0.hasSuffix(".lora_A.weight") }.map {
+            String($0.dropLast(".lora_A.weight".count)) + ".alpha"
+        })
+        let unsupported = arrays.keys.filter { !knownKeys.contains($0) }.sorted()
+        guard unsupported.isEmpty else { throw LoRAError.malformed(file: path, reason: "Unsupported tensors: \(unsupported.prefix(3))") }
+        for key in factorKeys.sorted() where key.hasSuffix(".lora_A.weight") {
             let module = String(key.dropLast(".lora_A.weight".count))
-            guard let a = arrays[key], let b = arrays[module + ".lora_B.weight"] else { continue }
+            guard let a = arrays[key], let b = arrays[module + ".lora_B.weight"],
+                a.ndim == 2, b.ndim == 2, a.dim(0) > 0, a.dim(0) == b.dim(1),
+                a.dim(1) > 0, b.dim(0) > 0,
+                [DType.float16, .bfloat16, .float32].contains(a.dtype), a.dtype == b.dtype
+            else { throw LoRAError.malformed(file: path, reason: "Missing or invalid factors for \(module)") }
             let rank = a.dim(0)
+            if let alpha = arrays[module + ".alpha"], alpha.size != 1 {
+                throw LoRAError.malformed(file: path, reason: "Non-scalar alpha for \(module)")
+            }
             let alpha = arrays[module + ".alpha"]?.item(Float.self) ?? peftAlpha ?? Float(rank)
-            let target = module.hasPrefix(prefix) ? String(module.dropFirst(prefix.count)) : module
-            targets[target] = Factors(a: a, b: b, alphaOverRank: alpha / Float(rank))
+            guard alpha.isFinite else { throw LoRAError.malformed(file: path, reason: "Non-finite alpha for \(module)") }
+            let sourcePrefix = [prefix, "diffusion_model."].first { module.hasPrefix($0) }
+            let target = sourcePrefix.map { String(module.dropFirst($0.count)) } ?? module
+            var mapped = [(target, b)]
+            if target.hasSuffix(".img_mlp.gate_up") {
+                guard b.dim(0).isMultiple(of: 2) else {
+                    throw LoRAError.malformed(file: path, reason: "Odd gate_up output size for \(module)")
+                }
+                let parent = String(target.dropLast("gate_up".count))
+                let half = b.dim(0) / 2
+                // ComfyUI gate_up stores gate rows first; splitting B shares A without changing factor bytes.
+                mapped = [(parent + "gate_layer", b[..<half]), (parent + "proj", b[half...])]
+            }
+            for (name, factorB) in mapped {
+                guard targets[name] == nil else { throw LoRAError.malformed(file: path, reason: "Duplicate target \(name)") }
+                targets[name] = Factors(a: a, b: factorB, alphaOverRank: alpha / Float(rank))
+            }
+        }
+        for key in factorKeys where key.hasSuffix(".lora_B.weight") {
+            let module = String(key.dropLast(".lora_B.weight".count))
+            guard arrays[module + ".lora_A.weight"] != nil else {
+                throw LoRAError.malformed(file: path, reason: "Missing A factor for \(module)")
+            }
         }
         self.targets = targets
     }
@@ -131,7 +168,8 @@ extension LoRAAdapter {
         return LoRAInspection(
             path: path, fileBytes: bytes, rank: adapter.rank,
             alpha: first.map { $0.alphaOverRank * Float($0.a.dim(0)) }, targetCount: adapter.targetCount,
-            dtype: first.map { "\($0.a.dtype)" } ?? "-", coverage: coverage, problems: problems)
+            dtype: Set(adapter.targets.values.map { "\($0.a.dtype)" }).sorted().joined(separator: "/"),
+            coverage: coverage, problems: problems)
     }
 }
 
@@ -209,10 +247,11 @@ struct LoRAGroup {
     /// `base[i]` are the base outputs of each target for input `x`.
     func apply(_ x: MLXArray, to base: [MLXArray]) -> [MLXArray] {
         zip(base, parts).map { y, parts in
+            // Mixed native factors may promote the adapter branch; keep the base projection's output dtype.
             parts.reduce(y) { y, part in
                 let update = matmul(matmul(x, part.a.T), part.b.T)
                 return y + (part.scale == 1 ? update : update * part.scale)
-            }
+            }.asType(y.dtype)
         }
     }
 
