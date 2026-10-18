@@ -8,6 +8,9 @@ permissions:
 concurrency:
   group: checks-${{ github.ref }}
   cancel-in-progress: true
+defaults:
+  run:
+    shell: bash
 jobs:
   macos:
     runs-on: xcode-27
@@ -19,11 +22,15 @@ jobs:
       - uses: actions/checkout@v7
       - name: Toolchain
         run: |
-          sw_vers
-          xcodebuild -version
-          swift --version
+          mkdir -p .tmp/ci
+          {
+            sw_vers
+            xcodebuild -version
+            swift --version
+            xcrun metal --version
+          } 2>&1 | tee .tmp/ci/toolchain.log
       - name: Release build
-        run: swift build -c release --jobs 2
+        run: swift build -c release --jobs 2 2>&1 | tee .tmp/ci/build.log
       - name: Common XCTest (no large model download)
         run: |
           mkdir -p .tmp/ci
@@ -40,3 +47,4 @@ jobs:
           name: common-regression-evidence
           path: .tmp/ci/
           if-no-files-found: error
+          include-hidden-files: true
