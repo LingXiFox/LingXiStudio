@@ -52,3 +52,8 @@ Phase A 原有结果保持原样。后续 GUI 四 LoRA 参考图出现卡顿与�
 隔离真模型实验 `HardwareMemoryBudgetTests` 一项通过，全部输出像素与四 LoRA 质量基线一致，结束 active=0；该轮新增 Swap-out=0，去噪 GPU 99–100%、整机 CPU 均值约 11.2%，主人确认未感到卡顿。压力曾短暂 warning，不能写成全程无压力。这项资源调度补充针对真实发现的桌面卡顿，不是为了提高吞吐而改变算子或精度；CLI 默认路径不额外改变内存水位。
 
 证据：`.tmp/runtime-v1-20261018/soft-budget-test.xml`、`soft-budget/03248B64-D88E-46E5-ABEA-4CD3BBEFD46E/`。后续实际 GUI 验收另行记录；隔离用例不能冒充最终 App 已验收。
+
+
+### 最终 GUI 资源边界
+
+实际 App 已启用任务作用域的 20 GiB 软调度水位。23:39 的完整四 LoRA＋参考图与冻结基线逐像素相同，用户反馈正常结束，但全机新增 Swap-out 仍为 5258.375 MiB（含前置静置），去噪样本新增 2783.6875 MiB。该轮交互通过，不满足零 Swap；不能将此前隔离实验的零 Swap 推广到当前桌面状态。候选标记不升级为正式稳定版，详见 [最终工作流报告](workbench-v1-acceptance.md#最终-app-复测交互通过零-swap-尚未达到)。
