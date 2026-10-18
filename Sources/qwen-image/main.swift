@@ -30,6 +30,7 @@ let usage = """
       --init <file>            Start image for img2img
       --mask <file>            Inpaint mask, white = repaint (--invert 1, --feather <px>, --keep-unmasked 0)
       --strength <0..1>        Share of the schedule run from the noised start image (default 1)
+      --thermal-samples 1     Four thermal/throughput probes in a 6-step benchmark (outside step timing)
     """
 
 struct Arguments {
@@ -142,7 +143,15 @@ do {
 
         let pipeline = try QwenImagePipeline(model: model)
         var lastStage: GenerationStage?
+        let sampleThermals = args.string("thermal-samples") == "1" && request.steps == 6
         let image = try pipeline.generate(request, inputs: inputs) { p in
+            if sampleThermals && ((p.stage == .prefill && p.fraction == 0)
+                || (p.stage == .denoising && [2, 4, 6].contains(p.step))) {
+                // Probe between timed steps; its small extra GPU load is included in total run time.
+                let probe = autoreleasepool { Diagnostics.probeThermal() }
+                let step = p.stage == .prefill ? 0 : p.step
+                print(String(format: "\nthermal sample step %d/6: %@ %.3f TFLOPS", step, probe.thermalState, probe.tflops))
+            }
             if p.stage != lastStage {
                 if lastStage != nil { print("") }
                 lastStage = p.stage

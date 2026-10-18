@@ -40,7 +40,7 @@ public enum ImageWriter {
     /// Writes a lossless RGBA PNG plus `<name>.json` with the full generation record.
     public static func write(_ image: GeneratedImage, model: String, to url: URL) throws {
         let metadata = GenerationMetadata(
-            model: model, request: image.request, timings: image.timings, stepSeconds: image.stepSeconds, totalSeconds: image.totalSeconds,
+            model: model, mode: image.request.mode.rawValue, request: image.request, timings: image.timings, stepSeconds: image.stepSeconds, totalSeconds: image.totalSeconds,
             peakMemoryBytes: image.peakMemoryBytes, createdAt: Date())
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]

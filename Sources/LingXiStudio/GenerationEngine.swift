@@ -75,6 +75,9 @@ final class GenerationEngine: @unchecked Sendable {
     }
 
     private func run(_ job: Job, _ events: @escaping @Sendable (Event) -> Void) throws {
+        // Keep user-requested inference out of App Nap, including when the window is covered.
+        let activity = ProcessInfo.processInfo.beginActivity(options: .userInitiated, reason: "Generate images")
+        defer { ProcessInfo.processInfo.endActivity(activity) }
         let model = ModelDirectory(root: job.modelRoot)
         _ = try model.validate()
         condition.lock()

@@ -1,0 +1,1247 @@
+{
+  "date": "2026-10-18",
+  "sourceCommit": "e572e82a1566e7c7ac41386e31cd9fe4ebd221bd",
+  "uiRuns": [
+    {
+      "taskID": "55B8E3DD-48F7-4572-8BFC-E735CAF615AD",
+      "mode": "inpaint",
+      "output": "20261018-131014-42.png",
+      "outputSHA256": "675c83181e162c5aa8ace0445082d7e3e84c04068a5467009a427bd3a76b6d36",
+      "size": [
+        512,
+        512
+      ],
+      "seed": 42,
+      "scheduler": "viggle_turbo",
+      "strength": 1,
+      "maskFeather": 0,
+      "inputRoles": [
+        "condition",
+        "mask"
+      ],
+      "LoRACount": 1,
+      "totalSeconds": 51.68538498878479,
+      "stepSeconds": [
+        5.111001968383789,
+        3.478500008583069,
+        3.398640990257263,
+        3.225525975227356,
+        3.8200950622558594,
+        3.896815061569214
+      ],
+      "peakMLXBytes": 19916288258,
+      "timings": [
+        {
+          "peakFootprintBytes": 1003652968,
+          "seconds": 0.0004960298538208008,
+          "stage": "validating"
+        },
+        {
+          "peakFootprintBytes": 16675074984,
+          "seconds": 5.960209012031555,
+          "stage": "loadingTextEncoder"
+        },
+        {
+          "peakFootprintBytes": 17370706856,
+          "seconds": 3.8392369747161865,
+          "stage": "encodingPrompt"
+        },
+        {
+          "peakFootprintBytes": 4717610952,
+          "seconds": 2.4376009702682495,
+          "stage": "encodingImages"
+        },
+        {
+          "peakFootprintBytes": 15919935824,
+          "seconds": 2.375203013420105,
+          "stage": "loadingTransformer"
+        },
+        {
+          "peakFootprintBytes": 19695186256,
+          "seconds": 11.1043119430542,
+          "stage": "prefill"
+        },
+        {
+          "peakFootprintBytes": 22026727760,
+          "seconds": 23.72479796409607,
+          "stage": "denoising"
+        },
+        {
+          "peakFootprintBytes": 1380075848,
+          "seconds": 0.15121197700500488,
+          "stage": "loadingVAE"
+        },
+        {
+          "peakFootprintBytes": 4766206280,
+          "seconds": 2.0922080278396606,
+          "stage": "decoding"
+        }
+      ]
+    },
+    {
+      "taskID": "93B8A499-23EF-4448-9A79-739EEFE93130",
+      "mode": "edit",
+      "output": "20261018-130922-42.png",
+      "outputSHA256": "9735ca79f6a468db18e7fdb6a993f367246f2edb751d6c07f9fec954e1f488b4",
+      "size": [
+        512,
+        512
+      ],
+      "seed": 42,
+      "scheduler": "viggle_turbo",
+      "strength": 1,
+      "maskFeather": 8,
+      "inputRoles": [
+        "condition"
+      ],
+      "LoRACount": 1,
+      "totalSeconds": 44.60069704055786,
+      "stepSeconds": [
+        2.589084029197693,
+        2.4224209785461426,
+        3.9758830070495605,
+        3.5399270057678223,
+        2.659811019897461,
+        2.5561180114746094
+      ],
+      "peakMLXBytes": 19917562002,
+      "timings": [
+        {
+          "peakFootprintBytes": 962774768,
+          "seconds": 0.0006450414657592773,
+          "stage": "validating"
+        },
+        {
+          "peakFootprintBytes": 16720114552,
+          "seconds": 5.935468077659607,
+          "stage": "loadingTextEncoder"
+        },
+        {
+          "peakFootprintBytes": 17417450360,
+          "seconds": 3.2428789138793945,
+          "stage": "encodingPrompt"
+        },
+        {
+          "peakFootprintBytes": 4803807104,
+          "seconds": 2.1137439012527466,
+          "stage": "encodingImages"
+        },
+        {
+          "peakFootprintBytes": 15914135864,
+          "seconds": 2.556414008140564,
+          "stage": "loadingTransformer"
+        },
+        {
+          "peakFootprintBytes": 19691041104,
+          "seconds": 10.480340003967285,
+          "stage": "prefill"
+        },
+        {
+          "peakFootprintBytes": 21950476648,
+          "seconds": 18.098132967948914,
+          "stage": "denoising"
+        },
+        {
+          "peakFootprintBytes": 1360169312,
+          "seconds": 0.1709129810333252,
+          "stage": "loadingVAE"
+        },
+        {
+          "peakFootprintBytes": 4745103712,
+          "seconds": 2.002076029777527,
+          "stage": "decoding"
+        }
+      ]
+    },
+    {
+      "taskID": "2BCF5ACF-0963-493C-9F3E-37834A4ADE4E",
+      "mode": "image-to-image",
+      "output": "20261018-130838-42.png",
+      "outputSHA256": "49d9acf413a8d8f9e8a60e34d20f20682dc6cccad5abc9d4599ef7f99348fac6",
+      "size": [
+        512,
+        512
+      ],
+      "seed": 42,
+      "scheduler": "viggle_turbo",
+      "strength": 0.6,
+      "maskFeather": 8,
+      "inputRoles": [
+        "initial"
+      ],
+      "LoRACount": 1,
+      "totalSeconds": 17.735414028167725,
+      "stepSeconds": [
+        2.080881953239441,
+        2.0397210121154785,
+        2.0513581037521362,
+        2.019132971763611
+      ],
+      "peakMLXBytes": 17410728082,
+      "timings": [
+        {
+          "peakFootprintBytes": 924943992,
+          "seconds": 0.0003581047058105469,
+          "stage": "validating"
+        },
+        {
+          "peakFootprintBytes": 15386046392,
+          "seconds": 2.263097047805786,
+          "stage": "loadingTextEncoder"
+        },
+        {
+          "peakFootprintBytes": 15441178552,
+          "seconds": 0.8539270162582397,
+          "stage": "encodingPrompt"
+        },
+        {
+          "peakFootprintBytes": 13354052864,
+          "seconds": 0.6322919130325317,
+          "stage": "encodingImages"
+        },
+        {
+          "peakFootprintBytes": 15843373272,
+          "seconds": 2.3844799995422363,
+          "stage": "loadingTransformer"
+        },
+        {
+          "peakFootprintBytes": 15903387864,
+          "seconds": 1.0963760614395142,
+          "stage": "prefill"
+        },
+        {
+          "peakFootprintBytes": 17868173576,
+          "seconds": 8.321911931037903,
+          "stage": "denoising"
+        },
+        {
+          "peakFootprintBytes": 2052148392,
+          "seconds": 0.15247297286987305,
+          "stage": "loadingVAE"
+        },
+        {
+          "peakFootprintBytes": 4403792152,
+          "seconds": 2.030380964279175,
+          "stage": "decoding"
+        }
+      ]
+    },
+    {
+      "taskID": "DB38C8AB-B32E-4EF9-8C62-786BD6D7BE7F",
+      "mode": "reference",
+      "output": "20261018-130820-42.png",
+      "outputSHA256": "cd1d18c6135b96e811ef8ce33024790d5b7d663c03dcfb7824b98c1c4c8fc271",
+      "size": [
+        512,
+        512
+      ],
+      "seed": 42,
+      "scheduler": "viggle_turbo",
+      "strength": 1,
+      "maskFeather": 8,
+      "inputRoles": [
+        "condition"
+      ],
+      "LoRACount": 1,
+      "totalSeconds": 43.331331968307495,
+      "stepSeconds": [
+        3.316435933113098,
+        2.3173879384994507,
+        2.296196937561035,
+        2.319177985191345,
+        2.267435908317566,
+        2.2918840646743774
+      ],
+      "peakMLXBytes": 19919937682,
+      "timings": [
+        {
+          "peakFootprintBytes": 207881584,
+          "seconds": 0.0011810064315795898,
+          "stage": "validating"
+        },
+        {
+          "peakFootprintBytes": 16586846952,
+          "seconds": 7.064669966697693,
+          "stage": "loadingTextEncoder"
+        },
+        {
+          "peakFootprintBytes": 17287770856,
+          "seconds": 3.8711129426956177,
+          "stage": "encodingPrompt"
+        },
+        {
+          "peakFootprintBytes": 4647044704,
+          "seconds": 2.302232027053833,
+          "stage": "encodingImages"
+        },
+        {
+          "peakFootprintBytes": 15845355712,
+          "seconds": 2.4601919651031494,
+          "stage": "loadingTransformer"
+        },
+        {
+          "peakFootprintBytes": 19593654464,
+          "seconds": 10.48702597618103,
+          "stage": "prefill"
+        },
+        {
+          "peakFootprintBytes": 21917839576,
+          "seconds": 15.087673902511597,
+          "stage": "denoising"
+        },
+        {
+          "peakFootprintBytes": 1295288480,
+          "seconds": 0.15250909328460693,
+          "stage": "loadingVAE"
+        },
+        {
+          "peakFootprintBytes": 4653566112,
+          "seconds": 1.9046430587768555,
+          "stage": "decoding"
+        }
+      ]
+    },
+    {
+      "taskID": "F5B92174-0230-4FE9-9DD8-77524516C89B",
+      "mode": "text-to-image",
+      "output": "20261018-130729-42.png",
+      "outputSHA256": "7ea20fd69850eff67a3fc0d24ca4d08c4b3c59581f8a473b21ac6d90c629666b",
+      "size": [
+        1024,
+        1024
+      ],
+      "seed": 42,
+      "scheduler": "viggle_turbo",
+      "strength": 1,
+      "maskFeather": 8,
+      "inputRoles": [],
+      "LoRACount": 1,
+      "totalSeconds": 65.36504602432251,
+      "stepSeconds": [
+        8.014166951179504,
+        8.01422894001007,
+        8.122081995010376,
+        8.189926981925964,
+        8.275720000267029,
+        8.341284036636353
+      ],
+      "peakMLXBytes": 18660171922,
+      "timings": [
+        {
+          "peakFootprintBytes": 165414112,
+          "seconds": 0.0006710290908813477,
+          "stage": "validating"
+        },
+        {
+          "peakFootprintBytes": 15312596776,
+          "seconds": 3.6030490398406982,
+          "stage": "loadingTextEncoder"
+        },
+        {
+          "peakFootprintBytes": 15376183080,
+          "seconds": 2.4007309675216675,
+          "stage": "encodingPrompt"
+        },
+        {
+          "peakFootprintBytes": 15770988640,
+          "seconds": 2.357180953025818,
+          "stage": "loadingTransformer"
+        },
+        {
+          "peakFootprintBytes": 15846436960,
+          "seconds": 1.0362699031829834,
+          "stage": "prefill"
+        },
+        {
+          "peakFootprintBytes": 19446182056,
+          "seconds": 49.145878076553345,
+          "stage": "denoising"
+        },
+        {
+          "peakFootprintBytes": 3829058224,
+          "seconds": 0.15651798248291016,
+          "stage": "loadingVAE"
+        },
+        {
+          "peakFootprintBytes": 13749160000,
+          "seconds": 6.664690971374512,
+          "stage": "decoding"
+        }
+      ]
+    }
+  ],
+  "inpaintPixels": {
+    "height": 512,
+    "insideChanged": 6802,
+    "insidePixels": 6804,
+    "maskFeather": 0,
+    "output": "20261018-131014-42.png",
+    "outsideChanged": 0,
+    "outsidePixels": 255340,
+    "width": 512
+  },
+  "unitTests": {
+    "command": "swift test -c release",
+    "tests": 4,
+    "failures": 0,
+    "covers": [
+      "mask identity, canvas removal and undo",
+      "five generation modes in JSON sidecar and PNG metadata"
+    ],
+    "completedAt": "2026-10-18T13:48:06+08:00"
+  },
+  "inheritedParity": {
+    "rerunThisSession": false,
+    "checks": [
+      {
+        "stage": "dit-cond",
+        "check": "reference 1-ulp latent perturbation (noise floor)",
+        "kind": "info",
+        "value": 0.012579696280981375,
+        "threshold": null,
+        "verdict": "info",
+        "detail": ""
+      },
+      {
+        "stage": "dit-cond",
+        "check": "velocity sigma=0.9 with condition image vs reference",
+        "kind": "float",
+        "value": 0.009577682791166834,
+        "threshold": 0.02515939256196275,
+        "verdict": "float",
+        "detail": "worst-token cos 0.99967"
+      },
+      {
+        "stage": "dit-cond",
+        "check": "control: condition image dropped",
+        "kind": "control",
+        "value": 0.14064560854211786,
+        "threshold": 0.02515939256196275,
+        "verdict": "detected",
+        "detail": "must exceed the acceptance band"
+      },
+      {
+        "stage": "end-to-end",
+        "check": "decoded image PSNR vs reference (dB)",
+        "kind": "info",
+        "value": 40.4648148242762,
+        "threshold": null,
+        "verdict": "info",
+        "detail": "same reference decoder for both latents"
+      },
+      {
+        "stage": "end-to-end",
+        "check": "reference vs itself, 1-ulp noise perturbation: final latents",
+        "kind": "info",
+        "value": 0.033254004672724276,
+        "threshold": null,
+        "verdict": "info",
+        "detail": "decoded PSNR 29.52 dB"
+      },
+      {
+        "stage": "end-to-end",
+        "check": "final latents vs reference",
+        "kind": "float",
+        "value": 0.00996424639127192,
+        "threshold": 0.06650800934544855,
+        "verdict": "float",
+        "detail": "decoded PSNR 40.46 dB vs the reference's own 29.52 dB"
+      },
+      {
+        "stage": "postprocess",
+        "check": "float image -> uint8 RGBA",
+        "kind": "exact",
+        "value": 0,
+        "threshold": 0,
+        "verdict": "exact",
+        "detail": ""
+      },
+      {
+        "stage": "scheduler",
+        "check": "linear 40 sigmas",
+        "kind": "float",
+        "value": 5.960464477539063e-08,
+        "threshold": 1e-06,
+        "verdict": "float",
+        "detail": ""
+      },
+      {
+        "stage": "scheduler",
+        "check": "viggle turbo sigmas",
+        "kind": "float",
+        "value": 2.9802322387695312e-08,
+        "threshold": 1e-06,
+        "verdict": "float",
+        "detail": ""
+      },
+      {
+        "stage": "scheduler",
+        "check": "Euler update (bf16 in/out, all 6 steps)",
+        "kind": "exact",
+        "value": 0.0,
+        "threshold": 0,
+        "verdict": "exact",
+        "detail": ""
+      },
+      {
+        "stage": "text-image",
+        "check": "token ids vs processor",
+        "kind": "exact",
+        "value": 0,
+        "threshold": 0,
+        "verdict": "exact",
+        "detail": "132 tokens, 96 image pads"
+      },
+      {
+        "stage": "text-image",
+        "check": "M-RoPE positions vs get_rope_index",
+        "kind": "exact",
+        "value": 0,
+        "threshold": 0,
+        "verdict": "exact",
+        "detail": ""
+      },
+      {
+        "stage": "text-image",
+        "check": "vision tower: reference bf16 vs fp32 (noise floor)",
+        "kind": "info",
+        "value": 0.08637241354012659,
+        "threshold": null,
+        "verdict": "info",
+        "detail": ""
+      },
+      {
+        "stage": "text-image",
+        "check": "vision embeds (fp32 tower) vs reference fp32",
+        "kind": "float",
+        "value": 4.562363586224701e-05,
+        "threshold": 0.08637241354012659,
+        "verdict": "float",
+        "detail": "worst-token cos 1.00000"
+      },
+      {
+        "stage": "text-image",
+        "check": "deepstack features (worst of 3) vs reference fp32",
+        "kind": "float",
+        "value": 1.80552990305118e-05,
+        "threshold": 0.04547284271663184,
+        "verdict": "float",
+        "detail": ""
+      },
+      {
+        "stage": "text-image",
+        "check": "hidden: reference bf16 vs fp32 (noise floor)",
+        "kind": "info",
+        "value": 0.24254153704647882,
+        "threshold": null,
+        "verdict": "info",
+        "detail": ""
+      },
+      {
+        "stage": "text-image",
+        "check": "hidden (fp32 residual) vs reference fp32",
+        "kind": "float",
+        "value": 0.022127099969460537,
+        "threshold": 0.24254153704647882,
+        "verdict": "float",
+        "detail": "worst-token cos 0.99602"
+      },
+      {
+        "stage": "text",
+        "check": "reference bf16 vs fp32 (noise floor)",
+        "kind": "info",
+        "value": 0.045436540126685854,
+        "threshold": null,
+        "verdict": "info",
+        "detail": ""
+      },
+      {
+        "stage": "text",
+        "check": "strict bf16 vs reference bf16",
+        "kind": "float",
+        "value": 0.02948762687972069,
+        "threshold": 0.09087308025337171,
+        "verdict": "float",
+        "detail": "worst-token cos 0.98920"
+      },
+      {
+        "stage": "text",
+        "check": "default (fp32 residual) vs reference fp32",
+        "kind": "float",
+        "value": 0.013013009672868336,
+        "threshold": 0.045436540126685854,
+        "verdict": "float",
+        "detail": "worst-token cos 0.99863"
+      },
+      {
+        "stage": "text",
+        "check": "control: final-normed output vs reference",
+        "kind": "control",
+        "value": 0.8602641748201305,
+        "threshold": 0.09087308025337171,
+        "verdict": "detected",
+        "detail": "the MFLUX text-to-image conditioning; must exceed the acceptance band"
+      },
+      {
+        "stage": "conditioning",
+        "check": "temb vs reference",
+        "kind": "float",
+        "value": 1.3759471351237135e-05,
+        "threshold": 0.01,
+        "verdict": "float",
+        "detail": ""
+      },
+      {
+        "stage": "conditioning",
+        "check": "modulation vs reference",
+        "kind": "float",
+        "value": 1.544247699822221e-05,
+        "threshold": 0.01,
+        "verdict": "float",
+        "detail": ""
+      },
+      {
+        "stage": "conditioning",
+        "check": "txt vs reference",
+        "kind": "float",
+        "value": 1.0673475061060283e-05,
+        "threshold": 0.01,
+        "verdict": "float",
+        "detail": ""
+      },
+      {
+        "stage": "transformer",
+        "check": "reference 1-ulp input perturbation (noise floor)",
+        "kind": "info",
+        "value": 0.009669186394832554,
+        "threshold": null,
+        "verdict": "info",
+        "detail": ""
+      },
+      {
+        "stage": "transformer",
+        "check": "velocity sigma=0.9 vs reference",
+        "kind": "float",
+        "value": 0.0063700827971968875,
+        "threshold": 0.019338372789665107,
+        "verdict": "float",
+        "detail": "worst-token cos 0.99936"
+      },
+      {
+        "stage": "transformer",
+        "check": "velocity sigma=0.3 vs reference",
+        "kind": "float",
+        "value": 0.007165849772788769,
+        "threshold": 0.019338372789665107,
+        "verdict": "float",
+        "detail": "worst-token cos 0.99987"
+      },
+      {
+        "stage": "transformer",
+        "check": "eager (traced) vs compiled velocity",
+        "kind": "exact",
+        "value": 0.0,
+        "threshold": 0,
+        "verdict": "exact",
+        "detail": ""
+      },
+      {
+        "stage": "transformer",
+        "check": "per-block hidden rel-L2 (first, middle, last)",
+        "kind": "info",
+        "value": 0.015940505947716857,
+        "threshold": null,
+        "verdict": "info",
+        "detail": "b0:0.0006, b1:0.0010, b7:0.0049, b15:0.0191, b23:0.0308, b31:0.0159"
+      },
+      {
+        "stage": "transformer",
+        "check": "control: final-normed text conditioning",
+        "kind": "control",
+        "value": 0.054698625886684116,
+        "threshold": 0.019338372789665107,
+        "verdict": "detected",
+        "detail": "must exceed the acceptance band"
+      },
+      {
+        "stage": "lora",
+        "check": "dynamic LoRA velocity vs PEFT reference",
+        "kind": "float",
+        "value": 0.004152795128749257,
+        "threshold": 0.019338372789665107,
+        "verdict": "float",
+        "detail": "worst-token cos 0.99997"
+      },
+      {
+        "stage": "lora",
+        "check": "control: LoRA missing (base model)",
+        "kind": "control",
+        "value": 0.06443855858190445,
+        "threshold": 0.019338372789665107,
+        "verdict": "detected",
+        "detail": "must exceed the acceptance band"
+      },
+      {
+        "stage": "lora",
+        "check": "two adapters at 0.5 vs PEFT one at 1.0",
+        "kind": "float",
+        "value": 0.012256488661625129,
+        "threshold": 0.019338372789665107,
+        "verdict": "float",
+        "detail": ""
+      },
+      {
+        "stage": "end-to-end",
+        "check": "sigmas (turbo, no terminal stretch)",
+        "kind": "float",
+        "value": 2.9802322387695312e-08,
+        "threshold": 1e-06,
+        "verdict": "float",
+        "detail": ""
+      },
+      {
+        "stage": "end-to-end",
+        "check": "final latents after 6 turbo steps",
+        "kind": "info",
+        "value": 0.00996424639127192,
+        "threshold": null,
+        "verdict": "info",
+        "detail": "per step: 0.0009, 0.0015, 0.0027, 0.0051, 0.0075, 0.0100"
+      },
+      {
+        "stage": "vae-encode",
+        "check": "reference bf16 vs fp32 (noise floor)",
+        "kind": "info",
+        "value": 0.011074720551950171,
+        "threshold": null,
+        "verdict": "info",
+        "detail": ""
+      },
+      {
+        "stage": "vae-encode",
+        "check": "fp32 encode vs reference fp32",
+        "kind": "float",
+        "value": 0.0005600650543451948,
+        "threshold": 0.001,
+        "verdict": "float",
+        "detail": "worst-token cos 1.000000"
+      },
+      {
+        "stage": "vae",
+        "check": "reference bf16 vs fp32 (noise floor)",
+        "kind": "info",
+        "value": 0.002676723343716506,
+        "threshold": null,
+        "verdict": "info",
+        "detail": ""
+      },
+      {
+        "stage": "vae",
+        "check": "fp32 decode (default) vs reference fp32",
+        "kind": "float",
+        "value": 0.00018513778613458694,
+        "threshold": 0.001,
+        "verdict": "float",
+        "detail": "mean |diff| 0.010 8-bit levels"
+      },
+      {
+        "stage": "vae",
+        "check": "bf16 decode vs reference bf16",
+        "kind": "float",
+        "value": 0.003591048852420493,
+        "threshold": 0.005353446687433012,
+        "verdict": "float",
+        "detail": ""
+      }
+    ],
+    "failures": 0
+  },
+  "uiRestoration": {
+    "verifiedModes": [
+      "text-to-image",
+      "reference",
+      "image-to-image",
+      "edit",
+      "inpaint"
+    ],
+    "maskRestored": true,
+    "LoRAEnabledAfterRelaunch": true
+  },
+  "benchmarkRuns": [
+    {
+      "run": "lingxi-131024",
+      "bufferMB": 200,
+      "fourPoint": false,
+      "compileOverlapped": true,
+      "steadySeconds": 6.201473355293274,
+      "stepSeconds": [
+        6.02586305141449,
+        5.971808910369873,
+        6.050302982330322,
+        6.233773946762085,
+        6.343858003616333,
+        6.407622933387756
+      ],
+      "totalSeconds": 49.11585295200348,
+      "peakMLXBytes": 18660171922,
+      "timings": [
+        {
+          "peakFootprintBytes": 61883040,
+          "seconds": 0.005547046661376953,
+          "stage": "validating"
+        },
+        {
+          "peakFootprintBytes": 15208459496,
+          "seconds": 2.2226569652557373,
+          "stage": "loadingTextEncoder"
+        },
+        {
+          "peakFootprintBytes": 15274831152,
+          "seconds": 0.7026499509811401,
+          "stage": "encodingPrompt"
+        },
+        {
+          "peakFootprintBytes": 15667670632,
+          "seconds": 2.2324260473251343,
+          "stage": "loadingTransformer"
+        },
+        {
+          "peakFootprintBytes": 15743528552,
+          "seconds": 0.9260989427566528,
+          "stage": "prefill"
+        },
+        {
+          "peakFootprintBytes": 19326300136,
+          "seconds": 37.193310022354126,
+          "stage": "denoising"
+        },
+        {
+          "peakFootprintBytes": 3456682840,
+          "seconds": 0.15413689613342285,
+          "stage": "loadingVAE"
+        },
+        {
+          "peakFootprintBytes": 12428969880,
+          "seconds": 5.6788649559021,
+          "stage": "decoding"
+        }
+      ],
+      "gate": "gate passed after 210s (2 probes): thermal nominal  matmul 13.11 TFLOPS",
+      "samples": [],
+      "swapUsedMB": [
+        3213.81,
+        3117.81
+      ],
+      "outputSHA256": "e7e5dcf046b452483934c5478056955bd65673594b2c83e30b7199b605d6b358"
+    },
+    {
+      "run": "lingxi-131449",
+      "bufferMB": 200,
+      "fourPoint": false,
+      "compileOverlapped": false,
+      "steadySeconds": 6.124338626861572,
+      "stepSeconds": [
+        6.060286998748779,
+        6.083176016807556,
+        6.079261064529419,
+        6.1005120277404785,
+        6.143025994300842,
+        6.215718030929565
+      ],
+      "totalSeconds": 48.40088403224945,
+      "peakMLXBytes": 18741435496,
+      "timings": [
+        {
+          "peakFootprintBytes": 61899424,
+          "seconds": 0.005730032920837402,
+          "stage": "validating"
+        },
+        {
+          "peakFootprintBytes": 15208459496,
+          "seconds": 2.196141004562378,
+          "stage": "loadingTextEncoder"
+        },
+        {
+          "peakFootprintBytes": 15274831152,
+          "seconds": 0.7487270832061768,
+          "stage": "encodingPrompt"
+        },
+        {
+          "peakFootprintBytes": 15667621504,
+          "seconds": 2.238303065299988,
+          "stage": "loadingTransformer"
+        },
+        {
+          "peakFootprintBytes": 15743479424,
+          "seconds": 0.993270993232727,
+          "stage": "prefill"
+        },
+        {
+          "peakFootprintBytes": 19326562160,
+          "seconds": 36.74732196331024,
+          "stage": "denoising"
+        },
+        {
+          "peakFootprintBytes": 10597769040,
+          "seconds": 0.151108980178833,
+          "stage": "loadingVAE"
+        },
+        {
+          "peakFootprintBytes": 18868738624,
+          "seconds": 5.320139050483704,
+          "stage": "decoding"
+        }
+      ],
+      "gate": "gate passed after 90s (2 probes): thermal nominal  matmul 12.90 TFLOPS",
+      "samples": [],
+      "swapUsedMB": [
+        2821.75,
+        2821.75
+      ],
+      "outputSHA256": "d14a22b9814f58c3b96c2e600122f790a3fdb7a7133c320b1067dfc7b309acb8"
+    },
+    {
+      "run": "lingxi-131749",
+      "bufferMB": 256,
+      "fourPoint": false,
+      "compileOverlapped": false,
+      "steadySeconds": 6.23235239982605,
+      "stepSeconds": [
+        6.235007047653198,
+        6.311748027801514,
+        6.281664967536926,
+        6.253165006637573,
+        6.149569988250732,
+        6.165614008903503
+      ],
+      "totalSeconds": 49.100821018218994,
+      "peakMLXBytes": 19685646482,
+      "timings": [
+        {
+          "peakFootprintBytes": 61899424,
+          "seconds": 0.005649924278259277,
+          "stage": "validating"
+        },
+        {
+          "peakFootprintBytes": 15208459496,
+          "seconds": 2.2118738889694214,
+          "stage": "loadingTextEncoder"
+        },
+        {
+          "peakFootprintBytes": 15274863920,
+          "seconds": 0.7286769151687622,
+          "stage": "encodingPrompt"
+        },
+        {
+          "peakFootprintBytes": 15667621480,
+          "seconds": 2.2703609466552734,
+          "stage": "loadingTransformer"
+        },
+        {
+          "peakFootprintBytes": 15743479400,
+          "seconds": 0.9348169565200806,
+          "stage": "prefill"
+        },
+        {
+          "peakFootprintBytes": 20425945040,
+          "seconds": 37.536092042922974,
+          "stage": "denoising"
+        },
+        {
+          "peakFootprintBytes": 1942226792,
+          "seconds": 0.14831602573394775,
+          "stage": "loadingVAE"
+        },
+        {
+          "peakFootprintBytes": 13636519784,
+          "seconds": 5.264895081520081,
+          "stage": "decoding"
+        }
+      ],
+      "gate": "gate passed after 50s (2 probes): thermal nominal  matmul 12.98 TFLOPS",
+      "samples": [],
+      "swapUsedMB": [
+        2813.75,
+        2797.75
+      ],
+      "outputSHA256": "da2263758e54f1f812e7df2ccba191e20bda3fd10c29418a0478906aa290ae57"
+    },
+    {
+      "run": "lingxi-132317",
+      "bufferMB": 200,
+      "fourPoint": true,
+      "compileOverlapped": false,
+      "steadySeconds": 6.034951376914978,
+      "stepSeconds": [
+        5.936511039733887,
+        5.949497938156128,
+        6.021341919898987,
+        6.036630988121033,
+        6.063104033470154,
+        6.104182004928589
+      ],
+      "totalSeconds": 49.07713294029236,
+      "peakMLXBytes": 18660172066,
+      "timings": [
+        {
+          "peakFootprintBytes": 62014112,
+          "seconds": 0.00568997859954834,
+          "stage": "validating"
+        },
+        {
+          "peakFootprintBytes": 15208525032,
+          "seconds": 2.2760229110717773,
+          "stage": "loadingTextEncoder"
+        },
+        {
+          "peakFootprintBytes": 15275011400,
+          "seconds": 0.747452974319458,
+          "stage": "encodingPrompt"
+        },
+        {
+          "peakFootprintBytes": 15667900032,
+          "seconds": 2.243682026863098,
+          "stage": "loadingTransformer"
+        },
+        {
+          "peakFootprintBytes": 16046255744,
+          "seconds": 1.25907301902771,
+          "stage": "prefill"
+        },
+        {
+          "peakFootprintBytes": 19460730688,
+          "seconds": 37.11162793636322,
+          "stage": "denoising"
+        },
+        {
+          "peakFootprintBytes": 8721520616,
+          "seconds": 0.15191996097564697,
+          "stage": "loadingVAE"
+        },
+        {
+          "peakFootprintBytes": 18163078328,
+          "seconds": 5.281365990638733,
+          "stage": "decoding"
+        }
+      ],
+      "gate": "gate passed after 30s (2 probes): thermal nominal  matmul 13.04 TFLOPS",
+      "samples": [
+        {
+          "step": 0,
+          "state": "nominal",
+          "tflops": 12.91
+        },
+        {
+          "step": 2,
+          "state": "nominal",
+          "tflops": 13.02
+        },
+        {
+          "step": 4,
+          "state": "nominal",
+          "tflops": 12.724
+        },
+        {
+          "step": 6,
+          "state": "nominal",
+          "tflops": 12.618
+        }
+      ],
+      "swapUsedMB": [
+        2765.69,
+        2765.69
+      ],
+      "outputSHA256": "1d89214d6ad0bd02bf4b18031be681973ee40a7c767fc45da7cff8f5810920a2"
+    },
+    {
+      "run": "lingxi-132438",
+      "bufferMB": 200,
+      "fourPoint": true,
+      "compileOverlapped": false,
+      "steadySeconds": 6.016031789779663,
+      "stepSeconds": [
+        5.993124008178711,
+        5.954337954521179,
+        6.009152054786682,
+        5.981782913208008,
+        6.069242000579834,
+        6.065644025802612
+      ],
+      "totalSeconds": 48.985666036605835,
+      "peakMLXBytes": 18660171922,
+      "timings": [
+        {
+          "peakFootprintBytes": 62046880,
+          "seconds": 0.005656003952026367,
+          "stage": "validating"
+        },
+        {
+          "peakFootprintBytes": 15208656104,
+          "seconds": 2.2099140882492065,
+          "stage": "loadingTextEncoder"
+        },
+        {
+          "peakFootprintBytes": 15275388232,
+          "seconds": 0.7887139320373535,
+          "stage": "encodingPrompt"
+        },
+        {
+          "peakFootprintBytes": 15668276864,
+          "seconds": 2.2378209829330444,
+          "stage": "loadingTransformer"
+        },
+        {
+          "peakFootprintBytes": 16046485120,
+          "seconds": 1.2188390493392944,
+          "stage": "prefill"
+        },
+        {
+          "peakFootprintBytes": 19461320728,
+          "seconds": 37.1397989988327,
+          "stage": "denoising"
+        },
+        {
+          "peakFootprintBytes": 3264449008,
+          "seconds": 0.15108990669250488,
+          "stage": "loadingVAE"
+        },
+        {
+          "peakFootprintBytes": 13637126040,
+          "seconds": 5.233669996261597,
+          "stage": "decoding"
+        }
+      ],
+      "gate": "gate passed after 200s (2 probes): thermal nominal  matmul 12.94 TFLOPS",
+      "samples": [
+        {
+          "step": 0,
+          "state": "nominal",
+          "tflops": 13.125
+        },
+        {
+          "step": 2,
+          "state": "nominal",
+          "tflops": 13.026
+        },
+        {
+          "step": 4,
+          "state": "nominal",
+          "tflops": 12.704
+        },
+        {
+          "step": 6,
+          "state": "nominal",
+          "tflops": 12.639
+        }
+      ],
+      "swapUsedMB": [
+        2717.69,
+        2709.69
+      ],
+      "outputSHA256": "a0a594b2f447b519488fce747eab60e2061f360cc85645090f8622f5f8ccb94f"
+    }
+  ],
+  "appPerformanceVerified": true,
+  "appRuns": [
+    {
+      "test": "app-final",
+      "taskID": "49D47394-2A97-4932-8F7F-9AAB6E499D6B",
+      "output": "20261018-133611-42.png",
+      "steadySeconds": 7.932698178291321,
+      "stepSeconds": [
+        7.865170001983643,
+        7.971470952033997,
+        7.887882947921753,
+        7.972843050956726,
+        7.843784928321838,
+        7.98750901222229
+      ],
+      "totalSeconds": 61.06205499172211,
+      "peakMLXBytes": 18660171986
+    },
+    {
+      "test": "app-activity",
+      "taskID": "9A348235-BD3A-44BC-86A8-2B4A0D022A55",
+      "output": "20261018-133914-42.png",
+      "steadySeconds": 7.932621622085572,
+      "stepSeconds": [
+        8.66319191455841,
+        8.036159992218018,
+        7.980311989784241,
+        7.988350033760071,
+        7.817344069480896,
+        7.840942025184631
+      ],
+      "totalSeconds": 61.59909391403198,
+      "peakMLXBytes": 18660171922
+    },
+    {
+      "test": "app-minimized",
+      "taskID": "C8CEE2F1-E3DE-4D2D-BCC9-83DEF94C74EF",
+      "output": "20261018-134340-42.png",
+      "steadySeconds": 7.860013222694397,
+      "stepSeconds": [
+        8.106423020362854,
+        7.872907042503357,
+        7.654981017112732,
+        7.758194923400879,
+        8.017020106315613,
+        7.996963024139404
+      ],
+      "totalSeconds": 60.858713030815125,
+      "peakMLXBytes": 18660171922
+    }
+  ],
+  "activityAssertion": {
+    "verifiedDuringTask": true,
+    "releasedAfterSuccess": true,
+    "improvedPerformance": false
+  },
+  "finalBuildBinarySHA256": {
+    "cli": "9c628e6161875b93f3681801a44c40703569931388900e91ee15f892bcbf9e5f",
+    "app": "06bed651709a8150af4b8b7f34cccd17c39c4d8ab95160c35556982b8e83e915"
+  },
+  "strictUnthrottledAtMost6Verified": false,
+  "manualAppRun": {
+    "taskID": "4EF4AACF-F247-4571-8F96-AD51B0C9DD78",
+    "output": "20261018-134657-42.png",
+    "observer": "manual launch by user, task JSON only",
+    "width": 1024,
+    "height": 1024,
+    "steps": 6,
+    "seed": 42,
+    "scheduler": "viggle_turbo",
+    "LoRACount": 1,
+    "LoRAScales": [
+      1
+    ],
+    "steadySeconds": 6.052976036071778,
+    "stepSeconds": [
+      6.0559810400009155,
+      6.041426062583923,
+      6.038309097290039,
+      6.0175100564956665,
+      6.052299976348877,
+      6.115334987640381
+    ],
+    "totalSeconds": 48.2289080619812,
+    "peakMLXBytes": 18660171922,
+    "postProbe": "thermal nominal  matmul 13.03 TFLOPS",
+    "fourPointSamplingInThisAppRun": false
+  },
+  "pixelEquality": [
+    {
+      "file": "lingxi-132317.png",
+      "rgbaSHA256": "d3c4a24a92e61cd523d03ea87afd493083078d6de2947b652e7a0902b25750ef"
+    },
+    {
+      "file": "lingxi-132438.png",
+      "rgbaSHA256": "d3c4a24a92e61cd523d03ea87afd493083078d6de2947b652e7a0902b25750ef"
+    },
+    {
+      "file": "20261018-134657-42.png",
+      "rgbaSHA256": "d3c4a24a92e61cd523d03ea87afd493083078d6de2947b652e7a0902b25750ef"
+    }
+  ],
+  "metalLibraryIdenticalBetweenCLIAndApp": true
+}

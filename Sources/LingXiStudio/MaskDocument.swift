@@ -16,6 +16,7 @@ final class MaskDocument {
     private(set) var width = 0
     private(set) var height = 0
     private var bitmap: [UInt8] = []
+    private var imageID: String?
     /// Bumped on every pixel change so views can redraw the overlay.
     private(set) var revision = 0
     private var undoStack: [[UInt8]] = []
@@ -34,9 +35,10 @@ final class MaskDocument {
     var canRedo: Bool { !redoStack.isEmpty }
     var hasCanvas: Bool { width > 0 }
 
-    /// Prepares an empty mask for an image of this size (keeps the mask when the size is unchanged).
-    func prepare(width: Int, height: Int) {
-        guard width != self.width || height != self.height else { return }
+    /// Keeps strokes only while the same source image and dimensions remain selected.
+    func prepare(width: Int, height: Int, imageID: String?) {
+        guard width != self.width || height != self.height || imageID != self.imageID else { return }
+        self.imageID = imageID
         self.width = width
         self.height = height
         bitmap = [UInt8](repeating: 0, count: width * height)

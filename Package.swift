@@ -28,5 +28,10 @@ let package = Package(
             name: "LingXiStudio",
             dependencies: ["QwenImageCore"]
         ),
+        .testTarget(
+            name: "WorkbenchTests",
+            dependencies: ["LingXiStudio", "QwenImageCore"],
+            path: "Tests/Workbench"
+        ),
     ]
 )

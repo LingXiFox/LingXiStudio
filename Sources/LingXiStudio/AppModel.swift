@@ -233,8 +233,7 @@ final class AppModel {
     var mainImage: InputImage? { conditions.first }
 
     private func syncMaskCanvas() {
-        guard let main = mainImage else { return }
-        mask.prepare(width: main.width, height: main.height)
+        mask.prepare(width: mainImage?.width ?? 0, height: mainImage?.height ?? 0, imageID: mainImage?.sha256)
     }
 
     /// Follows the main / last / start image's aspect ratio at 1024² (the official default) unless set manually.
