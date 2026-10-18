@@ -13,7 +13,7 @@ defaults:
     shell: bash
 jobs:
   macos:
-    runs-on: xcode-27
+    runs-on: macos-26
     timeout-minutes: 35
     env:
       LINGXI_TEST_DEVICE: cpu

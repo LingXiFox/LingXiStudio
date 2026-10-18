@@ -2,7 +2,7 @@
 
 ## 自动化分层
 
-- 常规 XCTest 不下载模型。`.github/workflows/check.yml` 使用标准 Apple Silicon `xcode-27` runner、Release 构建与本仓库锁定的 MLX Swift，2 个编译任务。
+- 常规 XCTest 不下载模型。`.github/workflows/check.yml` 使用标准 Apple Silicon `macos-26` runner、Release 构建与本仓库锁定的 MLX Swift，2 个编译任务。
 - CI 的 MLX 小张量测试显式在 CPU 上运行；不改变生产 Runtime 的 GPU 路径。Metal 编译图生命周期用例在标准虚拟机中**未覆盖**，必须在本机 GPU 运行。
 - SwiftPM 并行 xUnit 曾将 skipped 用例输出成没有 skipped 节点的 testcase。因此 CI 直接排除 Metal 专用用例，并在覆盖清单明确输出 notCovered，不把它当作通过。
 - `Scripts/check-tests.py` 将 `swift test list` 与实际 xUnit 的完整用例集合比较，拒绝空报告、遗漏、重复、失败、错误与非预期跳过。硬件测试不属于普通 CI。
@@ -17,6 +17,8 @@ LINGXI_TEST_DEVICE=cpu swift test -c release --jobs 2 --parallel --num-workers 1
   --skip 'Hardware|TransformerLifetimeTests' --xunit-output .tmp/tests-cpu.xml
 python3 Scripts/check-tests.py .tmp/tests.txt .tmp/tests-cpu.xml --cpu
 ```
+
+首轮 `xcode-27` 的预装 Xcode 27.0 缺少 MetalToolchain，构建失败；第二轮预检明确捕获该错误。保留两轮失败，改用已提供的 macOS 26/Xcode 26.6 镜像验证，不自动在本机安装工具。若替代镜像仍缺组件，必须先明确获得新增工具许可。
 
 GitHub runner 与标签依据 [官方 Xcode 27 公告](https://github.blog/changelog/2026-10-15-xcode-27-runner-image-generally-available/) 和 [runner 规格](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)。CPU scope 依据 [MLX Swift 官方文档](https://github.com/ml-explore/mlx-swift/blob/main/Source/MLX/Documentation.docc/Articles/using-streams.md)，并已在本机实跑。
 
