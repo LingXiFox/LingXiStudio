@@ -44,14 +44,14 @@ Compared outputs:
 - This UI acceptance output: `20261018-143826-42.png`, with its JSON record in the configured output folder.
 
 Local evidence is retained in `.tmp/gui-refinement-20261018/`:
-`light-main.png`, `light-final.png`, `dark-main.png`, `prompt-presets.png`, `prompt-history.png`,
-`generation-scrim.png`, `generation-complete.png`, `generation-cancelled.png`, `app-icon.png`, `compact-main.png`.
+`light-main.jpg`, `light-final.jpg`, `dark-main.jpg`, `prompt-presets.jpg`, `prompt-history.jpg`,
+`generation-scrim.jpg`, `generation-complete.jpg`, `generation-cancelled.jpg`, `app-icon.png`, `compact-main.jpg`.
 Build / test logs and the xUnit report are copied there. These local artifacts are not committed.
 
 ## Limits
 
 - This was a functional UI generation run with GUI capture and concurrent compilation, not a performance benchmark. The scrim correctly showed the observed timing (9.73 s/step at step 1); this run cannot establish the normal-use 5–6 s/step target. No new four-point thermal benchmark was run. Previous clean performance evidence remains in `workbench-acceptance.md`.
-- Automated resizing did not change the actual window dimensions. The user then manually reduced the window, verified in the 4718592×4292935744-pixel capture `compact-main.png`. The exact minimum supported 980×640-point boundary remains unverified.
+- Automated resizing did not change the actual window dimensions. The user then manually reduced the window, verified in the 2676×1738-pixel capture `compact-main.jpg`. The exact minimum supported 980×640-point boundary remains unverified.
 - No new failure was injected by corrupting model files, and all five image modes were not regenerated in this UI-only iteration. Their earlier acceptance and the existing model / metadata tests remain separate evidence.
 - IME composition and screen-reader navigation were not exercised. Native text validation remains in control when leaving fields.
 - Pre-change source snapshots, including the pre-existing uncommitted UI work, remain in `/tmp/lingxi-ui-refinement-20261018/` until user acceptance.
