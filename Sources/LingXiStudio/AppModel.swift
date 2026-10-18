@@ -442,6 +442,8 @@ final class AppModel {
         tasks[index] = task
         runningTaskID = task.id
         cancellationRequested = false
+        canvasNotice = nil
+        workspaceTab = .preview
         modelStatus = .inUse
         residency = [:]
         var records = task.conditions.map { $0.record(role: .condition) }
@@ -487,7 +489,7 @@ final class AppModel {
             }
             insertArtwork(url)
             selection = url
-            if workspaceTab != .preview && !mode.needsMask { workspaceTab = .preview }
+            workspaceTab = .preview
         case .finished(let result):
             AppLog.write("task \(taskID) finished: \(result)")
             switch result {

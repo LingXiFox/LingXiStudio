@@ -12,6 +12,9 @@ app=$root/dist/LingXiStudio.app
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp -f "$bin/LingXiStudio" "$app/Contents/MacOS/LingXiStudio"
 ditto "$bin/mlx-swift_Cmlx.bundle" "$app/Contents/Resources/mlx-swift_Cmlx.bundle"
+mkdir -p "$app/Contents/Resources/Legal"
+cp "$root/LICENSE" "$root/NOTICE" "$app/Contents/Resources/Legal/"
+ditto "$root/LICENSES" "$app/Contents/Resources/Legal/LICENSES"
 # Compile the layered Icon Composer source for native macOS appearances.
 mkdir -p "$root/.tmp"
 xcrun actool "$root/ICONs/icon.icon" --compile "$app/Contents/Resources" \
@@ -35,6 +38,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
   <key>CFBundleShortVersionString</key><string>$version</string>
   <key>CFBundleVersion</key><string>$version</string>
   <key>LSMinimumSystemVersion</key><string>26.2</string>
+  <key>NSHumanReadableCopyright</key><string>Copyright © 2026 LingXiFox. MIT License; third-party terms apply.</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.graphics-design</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSPrincipalClass</key><string>NSApplication</string>

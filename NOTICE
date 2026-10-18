@@ -1,0 +1,45 @@
+LingXiStudio
+Copyright (c) 2026 LingXiFox
+Project-authored code and documentation are licensed under the MIT License.
+See LICENSE. Third-party materials retain their own licenses.
+
+Third-party components used by the macOS build:
+
+- MLX Swift and MLX C, Copyright (c) 2023 ml-explore: MIT.
+  https://github.com/ml-explore/mlx-swift
+  https://github.com/ml-explore/mlx-c
+  Full text: LICENSES/MLXSwift-MIT.txt
+- MLX, Copyright (c) 2023 Apple Inc.: MIT.
+  https://github.com/ml-explore/mlx
+  Full text: LICENSES/MLX-MIT.txt
+- Swift Numerics, Copyright (c) 2019-2025 Apple Inc. and the Swift Numerics project authors:
+  Apache-2.0 with Runtime Library Exception.
+  https://github.com/apple/swift-numerics
+  Full text: LICENSES/SwiftNumerics-Apache2.txt
+- {fmt}, Copyright (c) 2012 - present, Victor Zverovich and {fmt} contributors: MIT.
+  https://github.com/fmtlib/fmt
+  Full text: LICENSES/Fmt-MIT.txt
+- JSON for Modern C++, Copyright (c) 2013-2022 Niels Lohmann: MIT.
+  https://github.com/nlohmann/json
+  Full text: LICENSES/JSON-MIT.txt
+- Apple metal-cpp: Apache-2.0.
+  https://developer.apple.com/metal/cpp/
+  Full text: LICENSES/MetalCpp-Apache2.txt
+
+The dependency versions are pinned in Package.resolved. License texts above
+are retained from those local dependency sources and included in the app bundle.
+
+External models and adapters are NOT distributed with this repository or app.
+The MIT license does not replace or grant rights to these materials:
+
+- Qwen-Image-2.1: Qwen RESEARCH LICENSE AGREEMENT.
+  https://huggingface.co/Qwen/Qwen-Image-2.1/blob/main/LICENSE
+- Viggle Qwen-Image-2.1 Turbo LoRA: Qwen RESEARCH LICENSE AGREEMENT.
+  https://huggingface.co/Viggle/Qwen-Image-2.1-viggle-turbo/blob/main/LICENSE
+
+Qwen is licensed under the Qwen RESEARCH LICENSE AGREEMENT, Copyright (c) 2026 Hangzhou Tongyi Laboratory Technology Co., Ltd. All Rights Reserved.
+
+The upstream Qwen license permits research/evaluation use only and requires a
+separate license for commercial use. Check the license supplied with each model
+or adapter before using or redistributing it. LingXiStudio is an independent
+project and is not endorsed by the upstream model or dependency authors.

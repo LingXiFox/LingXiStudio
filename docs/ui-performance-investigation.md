@@ -27,7 +27,8 @@ Date: 2026-10-18. Initial tested app: local commit `1322d50`.
 
 ## Pending acceptance
 
-- The user has accepted the new run's responsiveness. No further performance-policy or model changes were made on the basis of speculative causes.
+- The user initially reported improved responsiveness, then reproduced stutter before denoising and proposed adaptive text-encoder quantization. That supersedes the earlier responsiveness acceptance. No quantization code was changed; the user subsequently deferred performance work to prioritize workspace routing and repository publication. The cause and mitigation remain unresolved.
+- The next performance investigation should correlate compressor, swap-in/out and memory pressure with the actual loading/conditioning stages. A suggested adaptive text-encoder policy must not quantize the diffusion model and must avoid materializing all full-precision encoder weights before conversion.
 - Verify automatic notice dismissal and an empty preview after cancellation in the canvas-cleanup build. The older screenshots show the previous behavior.
 - Complete a 1024-square / Turbo 6-step generation and retain four thermal/load observations and output timings. The target remains 5–6 s/step without throttling; nominal thermal state alone cannot prove constant GPU frequency.
 - Exact minimum-window layout, screen-reader navigation and all five image modes are outside this performance follow-up.

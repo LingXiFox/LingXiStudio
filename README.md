@@ -1,125 +1,139 @@
 # LingXiStudio
 
-Native Qwen-Image-2.1 runtime for Apple Silicon, written in Swift on top of [MLX](https://github.com/ml-explore/mlx-swift).
-No Python, MFLUX, Gradio or local web service is needed at runtime.
+面向 Apple Silicon 的原生图像工作台，使用 Swift、SwiftUI 和 [MLX Swift](https://github.com/ml-explore/mlx-swift) 运行 Qwen-Image-2.1。
+推理不需要 Python、MFLUX、Gradio 或本地 Web 服务。
 
-## Status
+本项目处于开发阶段，提供本地构建、临时签名的 macOS App，尚未发布经过公证的安装包。项目代码采用 [MIT](LICENSE)；
+**模型和 LoRA 使用各自的许可证，MIT 不授予模型商用权利**，详见[许可证与致谢](#许可证与致谢)。
 
-The native SwiftUI workbench runs all five creation modes on a 32 GB M5 MacBook Air: text-to-image, reference-guided
-creation, image-to-image, image editing and masked inpainting. See [the workbench acceptance report](docs/workbench-acceptance.md)
-for the tested configurations, measured performance and remaining limits. This is a locally built development app, not a notarized release.
+## 环境要求
 
-Latest acceptance: manually launched App, 1024² BF16 + dynamic Turbo LoRA, **6.053 s/step** steady state. Two thermally
-gated CLI runs measured 6.035 / 6.016 s/step; four probes showed a 3–4% throughput decline during the runs, with no swap
-growth. GUI automation observation measured ~7.9 s/step and disturbed throughput, so those results are recorded separately.
+- Apple Silicon Mac；当前实际验收设备为 M5 MacBook Air、32 GB 统一内存。
+- macOS 26.2 或更新版本。Intel Mac、Linux 和 Windows 不在当前支持范围内。
+- 完整 Xcode，包含 Swift 6.3+、macOS SDK、Metal 工具链和支持 Icon Composer 的 `actool`。本机通过的工具链为 Swift 6.4 / macOS SDK 27.2。
+- 独立准备 Qwen-Image-2.1 的完整 Diffusers 目录，包括 `processor`、`text_encoder`、`transformer`、`vae` 和 `scheduler`。暂不支持 GGUF 或单文件量化模型。
+- 首次构建需要获取 `Package.resolved` 锁定的 MLX Swift 0.32.3 及其 Swift Numerics 依赖。模型、LoRA 和运行结果不随仓库提供。
 
-First run (M5 Air 32 GB, 1024×1024, 40 steps, seed 42): 403 s total, of which denoising 388 s (6.3 s/step at the
-start, ~9.5 s/step once the fanless chassis throttles), VAE decode 10 s, loading all weights ~4.5 s.
-Peak MLX memory 14.3 GB, no swap growth during the run.
+## 构建与启动
 
-Performance alignment (see [docs/performance-alignment.md](docs/performance-alignment.md)): with a compiled denoising
-step and a fused Q/K RMSNorm + RoPE Metal kernel, steady-state denoising runs at 5.60 s/step against MFLUX's
-6.05 s/step on the same machine and configuration (108%), at a 17.8 GB peak process footprint.
+```bash
+git clone https://github.com/LingXiFox/LingXiStudio.git
+cd LingXiStudio
+Scripts/make-app.sh
+open dist/LingXiStudio.app
+```
 
-Phase 1.5 (see [docs/phase-1.5-report.md](docs/phase-1.5-report.md)): every stage is checked against the official
-diffusers implementation (28 staged parity checks, all within the reference's own float noise), and LoRA is applied
-dynamically — base weights are never modified, adapters load, unload, enable, disable and rescale at runtime. With the
-rank-256 turbo LoRA applied on the fly, steady-state denoising runs at 6.05 s/step (median of 5 thermally gated runs),
-which is the baked speed plus the LoRA's own arithmetic.
+更新已有 App 前先退出旧进程。脚本构建 Release 可执行文件、Metal 资源、原生分层图标和许可证文本，并进行临时签名。
+首次打开后，在模型库选择本地模型目录，或使用内置 Hugging Face 下载器。默认模型位置为 `~/Models/Qwen-Image-2.1-BF16`。
+下载前应阅读并接受相应模型的上游许可。
 
-## Workbench app
+工作台左侧编辑输入图、提示词和参数，右上方查看作品，右下方管理 LoRA、历史和任务。分隔线可拖动，双击恢复布局。
+全局路径、外观和性能选项在设置中；内存、Swap 和组件状态在按需打开的运行时检查器中。
 
-`Scripts/make-app.sh` builds `dist/LingXiStudio.app` (SwiftUI, no extra runtime dependencies, ad-hoc signed).
-Packaging uses the installed Xcode `actool` to compile `ICONs/icon.icon` into the native macOS layered app icon. The main window
-uses a warm cream / charcoal theme: creation on the left 2/3; on the right, the artwork canvas (top) and
-LoRA / history / task tabs (bottom), split 1:1. Dividers drag; double-click one to restore it. Global paths and runtime
-policy live in Settings; component and memory details live in the on-demand Runtime Inspector.
-See [GUI interaction acceptance](docs/gui-design-acceptance.md) for the latest UI changes and verification limits.
+1. 选择创作模式；图片模式先导入或粘贴输入图，局部重绘再编辑蒙版。
+2. 填写提示词。正面与负面提示词并排；负面提示词只在 Guidance > 1 时参与推理。预设和历史在独立窗口中搜索、选择。
+3. 选择尺寸、种子和采样方案。Turbo 需要启用兼容的加速 LoRA，固定为 6 步。
+4. 点击生成或按 **⌘↩**。所有模式在任务开始时自动切到右侧“作品”页，显示当前阶段、步数、实测 s/step 和预计剩余去噪时间。
+   输入图和蒙版页仍可手动打开；已有蒙版不会因切页丢失。
+5. 点击停止或按 **⌘.** 后立即显示“正在停止…”，在安全计算边界取消。已提交的 GPU 运算需要先完成。
+   取消后预览留空，提示 3 秒后消失；已保存的作品仍在下方图库中。图库上方不再重复显示胶片缩略栏。
 
-| Area | What works |
+输出默认保存至 `~/Pictures/LingXiStudio`。每张 PNG 有 JSON 侧车记录，包含提示词、种子、模式、尺寸、采样、LoRA、阶段耗时和峰值内存；
+使用的输入图复制到输出目录的 `inputs/` 中。设置、预设、任务记录和日志位于 `~/Library/Application Support/LingXiStudio`。
+
+## 功能与边界
+
+| 模式 | 实现方式 |
 |---|---|
-| Model | Compact model / BF16 / readiness selector; folder selection and integrity checks in the model library; residency in Inspector |
-| Prompt | Side-by-side positive / negative editors; searchable, independent preset and history windows; click outside to commit and dismiss text focus |
-| Parameters | Size presets and custom (multiples of 32), steps, guidance, seed (random / fixed, actual seed shown), batch count with seed rule, standard / Turbo schedule (Turbo needs an enabled acceleration LoRA, locks 6 steps), measured time estimate |
-| Performance | Settings: verified 32 GB balanced policy and restart-required Metal batch options. Inspector: footprint, MLX, swap, pressure and thermal state. Canvas scrim: real stage, steps, s/step and denoising ETA |
-| LoRA | Import (file panel or drag), several at once, enable / scale / order / remove, compatibility check without loading the model; changes apply to the next queued task |
-| Tasks | Serial queue, cancel (memory is released), retry with the same parameters, logs, records kept across launches |
-| Images | Fit / 100 % / zoom / pan, standalone viewer window, save as, copy image / file / path / prompt, reveal in Finder, reuse all parameters, regenerate with the same seed, move to Trash |
+| 文生图 | 官方 Qwen-Image-2.1 文本条件管线 |
+| 参考图创作 | 官方多模态条件管线 |
+| 图像编辑 | 官方图像条件与编辑指令管线 |
+| 图生图 | 通用 SDEdit 方法，从加噪的初始图继续去噪 |
+| 局部重绘 | 编辑条件、逐步潜空间蒙版混合及可选像素合成 |
 
-Text-to-image, reference-guided creation and editing follow the official Qwen-Image-2.1 paths. Image-to-image uses
-SDEdit; inpainting uses editing conditions with per-step latent blending and optional pixel compositing. The UI labels
-these generic methods. At full image-to-image strength the start image is discarded; inpainting protects pixels outside
-the feathered mask when “keep unmasked” is enabled.
+图生图和局部重绘在界面上标注为通用方法。图生图强度为 1 时丢弃初始图；启用“保留未选区”时，蒙版外按羽化设置保留原图。
 
-Input images can be imported, pasted, reordered or sent from the gallery. The mask editor supports a separate large
-canvas, brush / eraser, undo / redo, inversion and PNG import / export. Gallery details include filters, comparison, batch
-export and legacy WebUI metadata import. Generation / prompt / LoRA presets, model and LoRA libraries, a Hugging Face
-downloader, PNG / JPEG / TIFF export and diagnostics are available. Outputs record every active LoRA and copy their
-input images alongside the result. Quantized profiles, step caching and automatic semantic masks remain unavailable.
+- 输入图导入、粘贴、排序、图库送入创作；蒙版画笔/橡皮、撤销/重做、反转、PNG 导入/导出和独立大画布。
+- 动态 LoRA 多选、启用、强度、排序和组合预设；基础权重不合并修改，调整应用于后续任务。
+- 串行任务队列、取消、重试、实际种子和跨启动记录；图库筛选、对比、批量操作、旧 WebUI 元数据导入。
+- 作品适配/100%/缩放/平移、独立查看器、复制与另存为、PNG/JPEG/TIFF 导出及移至废纸篓。
+- 暖奶白/暖炭黑主题、点击空白取消输入焦点、自定义键盘焦点指示、提示词与生成预设。
 
-## Layout
+**尚未实现**：文本编码器自适应量化、模型量化配置、步缓存和自动语义蒙版。性能与内存问题仍在排查，不能保证所有内存压力下均无卡顿。
+本次按用户要求暂停量化和性能修改；DiT 仍使用 BF16，视觉塔和 VAE 使用真正的 FP32，未降低模型精度。
 
-| Path | Purpose |
-|---|---|
-| `Sources/QwenImageCore/Tokenizer.swift` | Byte-level BPE tokenizer read from `processor/tokenizer.json` |
-| `Sources/QwenImageCore/TextEncoder.swift` | Qwen3-VL text stack (36 layers), last decoder output before the final norm |
-| `Sources/QwenImageCore/Transformer.swift` | 32-block single-stream block-causal DiT with cached text-prefix K/V |
-| `Sources/QwenImageCore/VAE.swift` | FP32 single-frame encoder and decoder of `AutoencoderKLQwenImage21` |
-| `Sources/QwenImageCore/VisionEncoder.swift` | FP32 Qwen3-VL vision tower with deepstack features |
-| `Sources/QwenImageCore/Conditioning.swift` | Image preprocessing and multimodal prompt / M-RoPE positions |
-| `Sources/QwenImageCore/ModePlan.swift` | Initial noise, strength, latent masks and pixel compositing |
-| `Sources/QwenImageCore/Scheduler.swift` | Flow-match Euler schedule (exponential shift + terminal stretch) |
-| `Sources/QwenImageCore/Pipeline.swift` | Staged pipeline: only one large component is resident at a time |
-| `Sources/QwenImageCore/ImageWriter.swift` | RGBA PNG + JSON sidecar with the full generation record |
-| `Sources/QwenImageCore/FusedKernels.swift` | Fused Q/K RMSNorm + RoPE Metal kernel |
-| `Sources/QwenImageCore/LoRA.swift` | Dynamic PEFT LoRA: adapters, stack (load/unload/enable/scale), runtime groups |
-| `Sources/QwenImageCore/Runtime.swift` | Process-wide MLX settings (command buffer size), call before any MLX use |
-| `Sources/QwenImageCore/ProcessMemory.swift` | Process footprint sampling per stage |
-| `Sources/qwen-image/main.swift` | CLI (`generate`, `validate`, numeric `debug-*` dumps) |
-| `Sources/LingXiStudio/` | SwiftUI workbench: `AppModel` (state, queue, persistence), `GenerationEngine` (single MLX thread), views |
-| `Scripts/make-app.sh` | Builds and ad-hoc signs `dist/LingXiStudio.app` |
-| `Scripts/benchmark.sh` | Same-config benchmark (LingXi / frozen baseline / MFLUX), thermally gated |
-| `Scripts/thermal-gate.sh` | Waits until the GPU probe is back to cold throughput |
-| `Tests/Parity/` | Staged numerical parity suite against diffusers (development only, needs Python) |
-
-## Build and run
+## CLI
 
 ```bash
 swift build -c release
+bin_dir="$(swift build -c release --show-bin-path)"
+"$bin_dir/qwen-image" validate --model "$HOME/Models/Qwen-Image-2.1-BF16"
+"$bin_dir/qwen-image" generate --prompt 'A neon shop sign that reads "QWEN IMAGE 2.1"' --seed 42
 ```
+
+默认 1024×1024、40 步、true CFG 关闭，输出到 `outputs/`。Turbo 增加
+`--lora /path/to/turbo.safetensors:1.0 --scheduler viggle_turbo --steps 6`；
+多个 LoRA 使用逗号分隔：`--lora a.safetensors:0.8,b.safetensors`。
+
+| 模式 | 附加参数 |
+|---|---|
+| 参考图 | `--mode reference --image reference.png` |
+| 编辑 | `--mode edit --image main.png` |
+| 图生图 | `--mode img2img --init initial.png --strength 0.6` |
+| 重绘 | `--mode inpaint --image main.png --mask mask.png --feather 8` |
+
+蒙版白色表示重绘区域。使用 `--width` / `--height` 覆盖输入图尺寸策略；尺寸须为 32 的倍数。
+
+## 验证与性能
 
 ```bash
-./.build/release/qwen-image generate --prompt "A neon shop sign that reads \"QWEN IMAGE 2.1\"" --seed 42
+mkdir -p .tmp
+swift test -c release --parallel --num-workers 2 --xunit-output .tmp/tests.xml
 ```
 
-Defaults: model `~/Models/Qwen-Image-2.1-BF16`, 1024×1024, 40 steps, true CFG off (the model is sampled without guidance).
-Turbo: `--lora <file>:1.0 --scheduler viggle_turbo --steps 6`. Several LoRAs: `--lora a.safetensors:0.8,b.safetensors`.
-Results go to `outputs/` with a `.json` sidecar (prompt, seed, size, steps, scheduler, timings, peak memory).
+当前 XCTest 有 11 项，覆盖蒙版换图清理、输出元数据、点击空白提交字段、权重加载取消和文本编码层间取消。
+[分阶段数值对齐脚本](Tests/Parity/run.sh) 是开发用工具，需要单独准备 Python/PyTorch 参考环境；正常推理不需要这些依赖。
 
-For image modes, add `--mode reference --image reference.png`, `--mode edit --image main.png`,
-`--mode img2img --init initial.png --strength 0.6`, or
-`--mode inpaint --image main.png --mask mask.png --feather 8`. White mask pixels mark the repaint area.
-Use `--width` / `--height` to override the input-based size policy.
-
-## Memory strategy (32 GB unified memory)
-
-| Stage | Resident weights |
+| 证据 | 已验证范围 |
 |---|---|
-| Prompt encoding | Text encoder language layers, BF16 (~16 GB); FP32 vision tower runs first when condition images exist; `lm_head` is never read |
-| Denoising | Transformer BF16 (~14 GB) + per-block text K/V cache |
-| Decoding | VAE decoder FP32 (~1.3 GB file, decoder only) |
+| [工作台验收](docs/workbench-acceptance.md) | 五种模式、CLI/手动 App 测试及四点温控记录 |
+| [GUI 验收](docs/gui-design-acceptance.md) | 界面交互、原生图标、取消和后续调整；明确列出尚未实测的项 |
+| [UI 性能排查](docs/ui-performance-investigation.md) | 空闲采样、窗口共享干扰、真实生成采样与内存压力观察 |
+| [数值对齐](docs/phase-1.5-report.md) | 28 项分阶段对齐检查、LoRA 与官方实现比较 |
+| [性能对齐](docs/performance-alignment.md) | 早期同配置性能对照，保留测试上下文 |
 
-Each component is released and the MLX buffer cache cleared before the next one loads. FP32 stages use true FP32
-(TF32 is disabled by default); the transformer uses BF16. Additional condition images increase attention and K/V memory
-and cost per step; the UI enforces an estimated memory budget.
+此前手动启动 App 的 1024² / BF16 / Turbo 6 步 / 动态 LoRA 测得稳态 **6.053 s/step**；
+两次温控 CLI 测得 6.035 / 6.016 s/step，四点吞吐下降约 3–4%。这些是特定设备与配置下的历史结果，
+不代表最新 UI 修订重新通过了测速。窗口共享采集会干扰 GPU 与 WindowServer 负载，相关结果单独记录。
+目标仍是未降频时 5–6 s/step；长任务、参考图数量、内存压力与无风扇机型的温控都会影响速度。
 
-## Numerical verification
+运行时分阶段加载并释放组件，每阶段结束清理 MLX 缓冲缓存：文本编码器约 16 GB、BF16 DiT 约 14 GB、FP32 VAE 解码器约 1.3 GB。
+峰值还包括激活、LoRA、条件图与系统内存，不能把权重文件大小当成实际峰值。
 
-`Tests/Parity/run.sh` runs each stage of LingXi and the official diffusers implementation on the same intermediate
-inputs (text encoder, conditioning, transformer per block, LoRA vs PEFT, scheduler, Euler update, VAE, postprocess,
-6-step end to end). Each result is compared with the reference's own noise floor, and deliberately wrong controls
-(post-norm text conditioning, missing LoRA) must be detected. Results are in
-[docs/phase-1.5-report.md](docs/phase-1.5-report.md).
+## 源码结构
 
-The text encoder keeps its residual stream in FP32 (matmuls stay BF16), which is why it tracks the FP32 reference
-closer than a pure BF16 run (`LINGXI_TE_RESIDUAL=bf16` gives the reference's strict BF16 stream).
+| 路径 | 职责 |
+|---|---|
+| `Sources/LingXiStudio/` | SwiftUI 工作台、队列、输入/图库/模型管理、持久化 |
+| `Sources/QwenImageCore/` | 文本/视觉编码器、DiT、VAE、LoRA、调度和输出记录 |
+| `Sources/qwen-image/` | CLI 生成、校验与数值诊断 |
+| `Scripts/` | App 打包、温控与基准测试 |
+| `Tests/Workbench/` | XCTest 回归测试 |
+| `Tests/Parity/` | 与官方参考实现的分阶段数值比较 |
+| `docs/` | 已保留的验收与性能报告 |
+| `ICONs/` | 原生 Icon Composer 图标源文件与导出资源 |
+
+模型权重、生成结果、运行日志、缓存、构建产物和环境文件由 `.gitignore` 排除，不随 Git 上传。
+
+## 许可证与致谢
+
+- 本仓库原创代码与文档：**MIT**，Copyright © 2026 LingXiFox，完整文本见 [LICENSE](LICENSE)。
+- MLX Swift、MLX、MLX C、Swift Numerics 及其原生组件：保留各自许可，版本锁定见 `Package.resolved`；
+  完整许可文本位于 [LICENSES](LICENSES)，组件归属见 [NOTICE](NOTICE)，打包时一并放入 App 的 `Contents/Resources/Legal/`。
+- [Qwen-Image-2.1](https://huggingface.co/Qwen/Qwen-Image-2.1) 和
+  [Viggle Turbo LoRA](https://huggingface.co/Viggle/Qwen-Image-2.1-viggle-turbo) 不随项目分发。
+  两者当前采用 **Qwen RESEARCH LICENSE AGREEMENT**，只授予研究/评估用途，商业使用需要向权利人取得单独许可；
+  以[模型许可原文](https://huggingface.co/Qwen/Qwen-Image-2.1/blob/main/LICENSE)和
+  [LoRA 许可原文](https://huggingface.co/Viggle/Qwen-Image-2.1-viggle-turbo/blob/main/LICENSE)为准。
+
+LingXiStudio 是独立项目，与模型及依赖作者没有官方隶属或背书关系。
