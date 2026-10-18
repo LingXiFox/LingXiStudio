@@ -43,6 +43,15 @@ stage scheduler
 $bin debug-vae --in ${REAL_LATENT:?set REAL_LATENT to a 256x384 image latent} $geo --dtype f32 --out $work/vae_f32.safetensors
 $bin debug-vae --in $REAL_LATENT $geo --out $work/vae_bf16.safetensors
 stage vae --real-latent $REAL_LATENT
+$bin debug-vae-encode --in $work/vae_f32.safetensors --out $work/vae_enc.safetensors
+stage vae-encode
+$bin debug-text-image --prompt "Turn the scene into a watercolor painting" --image $work/cond.png --out $work/te_image.safetensors
+stage text-image
+[[ -f $work/result-dit-cond.json ]] || {
+  $py -I $ref dit-cond-inputs --work $work
+  $bin debug-transformer-cond --in $work/dit_cond_in.safetensors --sigmas 0.9 $geo --out $work/dit_cond.safetensors
+}
+stage dit-cond
 $bin debug-postprocess --in $work/image.safetensors --out $work/post.safetensors
 stage postprocess
 # Reference transformer stages last: they hold the 14 GB model on the CPU for several minutes.

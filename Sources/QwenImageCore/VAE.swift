@@ -206,3 +206,175 @@ final class QwenImageVAEDecoder: ParameterContainer {
         return clip(x.asType(.float32), min: -1, max: 1)
     }
 }
+
+/// Image encoder of `AutoencoderKLQwenImage21` for single-frame RGBA images (the condition-image and img2img path).
+///
+/// For one frame the causal 3D convolutions are 2D convolutions and the downsamplers' `time_conv` is skipped (the
+/// first chunk only fills the feature cache). The residual `AvgDown3D` shortcut zero-pads the time axis to the
+/// temporal factor before averaging, so on temporal blocks half of its output channels are exactly zero.
+/// Tensors are NHWC; the encoder runs in fp32 like the checkpoint.
+final class QwenImageVAEEncoder: ParameterContainer {
+    typealias Conv = QwenImageVAEDecoder.Conv
+    typealias ResBlock = QwenImageVAEDecoder.ResBlock
+
+    struct DownBlock {
+        let resnets: [ResBlock]
+        let downsampler: Conv?
+        let inDim: Int
+        let outDim: Int
+        let temporalFactor: Int
+        let spatialFactor: Int
+    }
+
+    let latentsMean: MLXArray
+    let latentsStd: MLXArray
+    let convIn: Conv
+    let downBlocks: [DownBlock]
+    let midResnets: [ResBlock]
+    let midAttention: QwenImageVAEDecoder.Attention
+    let normOut: MLXArray
+    let convOut: Conv
+    let quantConv: Conv
+    let zDim: Int
+
+    var parameters: [MLXArray] {
+        func conv(_ c: Conv) -> [MLXArray] { [c.weight, c.bias] }
+        func res(_ r: ResBlock) -> [MLXArray] {
+            [r.norm1, r.norm2] + conv(r.conv1) + conv(r.conv2) + (r.shortcut.map(conv) ?? [])
+        }
+        return [latentsMean, latentsStd, normOut] + conv(convIn) + conv(convOut) + conv(quantConv)
+            + midResnets.flatMap(res) + [midAttention.norm] + conv(midAttention.qkv) + conv(midAttention.proj)
+            + downBlocks.flatMap { $0.resnets.flatMap(res) + ($0.downsampler.map(conv) ?? []) }
+    }
+
+    init(store: WeightStore, configURL: URL) throws {
+        let data = try Data(contentsOf: configURL)
+        let config = (try JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+        let mean = (config["latents_mean"] as? [Double]) ?? []
+        let std = (config["latents_std"] as? [Double]) ?? []
+        zDim = (config["z_dim"] as? Int) ?? 64
+        let baseDim = (config["base_dim"] as? Int) ?? 96
+        let dimMult = (config["dim_mult"] as? [Int]) ?? [1, 2, 4, 8, 8]
+        let numRes = (config["num_res_blocks"] as? Int) ?? 2
+        let temporal = (config["temperal_downsample"] as? [Bool]) ?? [false, true, true, true]
+        guard mean.count == zDim, std.count == zDim else {
+            throw WeightError.shapeMismatch("latents_mean/std", expected: [zDim], actual: [mean.count])
+        }
+        latentsMean = MLXArray(mean.map { Float($0) })
+        latentsStd = MLXArray(std.map { Float($0) })
+
+        func conv(_ key: String) throws -> Conv {
+            let weight = try store.get("\(key).weight")
+            return Conv(weight: weight.transposed(0, 2, 3, 1).asType(.float32), bias: try store.get("\(key).bias", dtype: .float32))
+        }
+        func gamma(_ key: String) throws -> MLXArray {
+            let value = try store.get(key)
+            return value.reshaped(value.dim(0)).asType(.float32)
+        }
+        func res(_ key: String) throws -> ResBlock {
+            ResBlock(
+                norm1: try gamma("\(key).norm1.gamma"), conv1: try conv("\(key).conv1"),
+                norm2: try gamma("\(key).norm2.gamma"), conv2: try conv("\(key).conv2"),
+                shortcut: store.contains("\(key).conv_shortcut.weight") ? try conv("\(key).conv_shortcut") : nil)
+        }
+
+        convIn = try conv("encoder.conv_in")
+        let channels = ([1] + dimMult).map { $0 * baseDim }
+        downBlocks = try (0..<dimMult.count).map { i in
+            let key = "encoder.down_blocks.\(i)"
+            let down = i != dimMult.count - 1
+            return DownBlock(
+                resnets: try (0..<numRes).map { try res("\(key).resnets.\($0)") },
+                downsampler: down ? try conv("\(key).downsampler.resample.1") : nil,
+                inDim: channels[i], outDim: channels[i + 1],
+                temporalFactor: down && i < temporal.count && temporal[i] ? 2 : 1,
+                spatialFactor: down ? 2 : 1)
+        }
+        midResnets = try [res("encoder.mid_block.resnets.0"), res("encoder.mid_block.resnets.1")]
+        midAttention = .init(
+            norm: try gamma("encoder.mid_block.attentions.0.norm.gamma"),
+            qkv: try conv("encoder.mid_block.attentions.0.to_qkv"),
+            proj: try conv("encoder.mid_block.attentions.0.proj"))
+        normOut = try gamma("encoder.norm_out.gamma")
+        convOut = try conv("encoder.conv_out")
+        quantConv = try conv("quant_conv")
+    }
+
+    /// `AvgDown3D` on one frame: zero-pad time to `temporalFactor`, fold (t, i, j) into channels, average groups.
+    private func avgDown(_ x: MLXArray, _ block: DownBlock) -> MLXArray {
+        let (b, h, w, c) = (x.dim(0), x.dim(1), x.dim(2), x.dim(3))
+        let s = block.spatialFactor
+        let t = block.temporalFactor
+        // [b, h/s, i, w/s, j, c] -> [b, h/s, w/s, c, i, j]
+        var y = x.reshaped(b, h / s, s, w / s, s, c).transposed(0, 1, 3, 5, 2, 4)
+        y = y.reshaped(b, h / s, w / s, c, 1, s, s)
+        if t > 1 {
+            // The padded frames come first and are zero; the real frame is the last time slot.
+            let zeros = MLXArray.zeros([b, h / s, w / s, c, t - 1, s, s], dtype: y.dtype)
+            y = concatenated([zeros, y], axis: 4)
+        }
+        let factor = t * s * s
+        let group = c * factor / block.outDim
+        return y.reshaped(b, h / s, w / s, block.outDim, group).mean(axis: -1)
+    }
+
+    /// `ZeroPad2d((0, 1, 0, 1))` then a 3x3 stride-2 convolution without padding.
+    private func downsample(_ conv: Conv, _ x: MLXArray) -> MLXArray {
+        let padded = padded(x, widths: [.init((0, 0)), .init((0, 1)), .init((0, 1)), .init((0, 0))])
+        return conv2d(padded, conv.weight, stride: .init(2), padding: .init(0)) + conv.bias
+    }
+
+    private func channelNorm(_ x: MLXArray, _ gamma: MLXArray) -> MLXArray {
+        let norm = maximum(sqrt(sum(x * x, axis: -1, keepDims: true)), MLXArray(Float(1e-12)))
+        return x / norm * (Float(gamma.dim(0)).squareRoot() * gamma)
+    }
+
+    private func resBlock(_ block: ResBlock, _ x: MLXArray) -> MLXArray {
+        let h = block.shortcut.map { $0(x) } ?? x
+        var y = block.conv1(silu(channelNorm(x, block.norm1)))
+        y = block.conv2(silu(channelNorm(y, block.norm2)))
+        return y + h
+    }
+
+    private func attention(_ x: MLXArray) -> MLXArray {
+        let (b, h, w, c) = (x.dim(0), x.dim(1), x.dim(2), x.dim(3))
+        let qkv = midAttention.qkv(channelNorm(x, midAttention.norm)).reshaped(b, 1, h * w, 3 * c)
+        let parts = split(qkv, parts: 3, axis: -1)
+        let out = MLXFast.scaledDotProductAttention(
+            queries: parts[0], keys: parts[1], values: parts[2], scale: 1 / Float(c).squareRoot(), mask: .none)
+        return x + midAttention.proj(out.reshaped(b, h, w, c))
+    }
+
+    /// Encodes an RGBA image in `[-1, 1]`, `[1, H, W, 4]` (H, W multiples of 16), to normalized packed latents
+    /// `[1, H/16 * W/16, 64]`: the posterior mean (`sample_mode="argmax"`), then `(z - mean) / std`.
+    func encode(_ image: MLXArray, trace: ((String, MLXArray) -> Void)? = nil) -> MLXArray {
+        let cacheLimit = Memory.cacheLimit
+        Memory.cacheLimit = QwenImageVAEDecoder.decodeCacheLimit
+        defer {
+            Memory.cacheLimit = cacheLimit
+            Memory.clearCache()
+        }
+        var x = convIn(image.asType(.float32))
+        trace?("conv_in", x)
+        for (index, block) in downBlocks.enumerated() {
+            let input = x
+            for resnet in block.resnets {
+                x = resBlock(resnet, x)
+                eval(x)
+            }
+            if let downsampler = block.downsampler { x = downsample(downsampler, x) }
+            x = x + avgDown(input, block)
+            trace?("down.\(index)", x)
+            eval(x)
+        }
+        x = resBlock(midResnets[0], x)
+        x = attention(x)
+        x = resBlock(midResnets[1], x)
+        trace?("mid", x)
+        x = convOut(silu(channelNorm(x, normOut)))
+        x = quantConv(x)
+        let mu = x[.ellipsis, 0..<zDim]
+        let (h, w) = (mu.dim(1), mu.dim(2))
+        return ((mu - latentsMean) / latentsStd).reshaped(1, h * w, zDim)
+    }
+}

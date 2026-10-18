@@ -22,6 +22,31 @@ public enum Diagnostics {
             ], url: url)
     }
 
+    /// Multimodal prompt encoding: vision tower outputs and the text encoder's pre-norm hidden states.
+    public static func dumpTextImage(model: ModelDirectory, prompt: String, image url: URL, to out: URL) throws {
+        let tokenizer = try QwenTokenizer(directory: model.processor)
+        let image = try RGBAImage(contentsOf: url)
+        let mp = try MultimodalPrompt(prompt: prompt, imageSizes: [(image.width, image.height)], tokenizer: tokenizer)
+        let store = try WeightStore(directory: model.textEncoder, component: "text_encoder")
+        var traced: [String: MLXArray] = [:]
+        let vision = try QwenVisionEncoder(store: store).encode(image) { traced["v_\($0)"] = $1.asType(.float32) }
+        let encoder = try QwenTextEncoder(store: store)
+        let hidden = encoder(
+            mp.ids,
+            vision: .init(embeds: vision.embeds, deepstack: vision.deepstack, ranges: mp.imageRanges, positions: mp.positions))
+        var arrays: [String: MLXArray] = [
+            "hidden": hidden.asType(.float32),
+            "ids": MLXArray(mp.ids.map { Int32($0) }),
+            "drop": MLXArray([Int32(mp.drop)]),
+            "positions": MLXArray(mp.positions.flatMap { $0 }).reshaped(3, -1),
+            "vision": vision.embeds.asType(.float32),
+            "rgb": MLXArray(image.rgbOverWhite()).reshaped(image.height, image.width, 3),
+        ]
+        for (i, d) in vision.deepstack.enumerated() { arrays["deepstack\(i)"] = d.asType(.float32) }
+        arrays.merge(traced) { a, _ in a }
+        try save(arrays: arrays, url: out)
+    }
+
     private static func loadTransformer(_ model: ModelDirectory, loras: [LoRASpec]) throws -> (
         QwenImageTransformer, LoRAStack
     ) {
@@ -80,6 +105,37 @@ public enum Diagnostics {
                 ? transformer.uncompiled(latents: latents, sigma: sigma, cache: cache, rope: rope.image)
                 : transformer(latents: latents, sigma: sigma, cache: cache, rope: rope.image)
             dumped["velocity.s\(i)"] = out.asType(.float32)
+            eval(Array(dumped.values))
+        }
+        try save(arrays: dumped, url: url)
+    }
+
+    /// One condition image: `embeds` [1, L, 4096] (encoder output after the system drop, pad slots included),
+    /// `pad_mask` [L], `cond` [1, ch*cw, 64] with `cond_hw` = [ch, cw], target `latents` [1, h*w, 64].
+    public static func dumpTransformerCondition(
+        model: ModelDirectory, input: URL, sigmas: [Float], latentHeight: Int, latentWidth: Int,
+        loras: [LoRASpec] = [], to url: URL
+    ) throws {
+        let values = try inputs(input, ["embeds", "pad_mask", "cond", "cond_hw", "latents"])
+        let embeds = values[0].asType(.bfloat16)
+        let pad = values[1].asType(.int32).asArray(Int32.self)
+        let hw = values[3].asType(.int32).asArray(Int32.self)
+        let condition = QwenImageTransformer.ConditionImage(
+            latents: values[2].asType(.bfloat16), height: Int(hw[0]), width: Int(hw[1]))
+        let latents = values[4].asType(.bfloat16)
+        guard let start = pad.firstIndex(of: 1), let end = pad.lastIndex(of: 1) else {
+            throw WeightError.missingTensor("pad_mask (no image slots)", component: input.path)
+        }
+        let ranges = [start..<(end + 1)]
+        let (transformer, _) = try loadTransformer(model, loras: loras)
+        let layout = transformer.layout(
+            textLength: embeds.dim(1), imageRanges: ranges, conditions: [(condition.height, condition.width)],
+            latentHeight: latentHeight, latentWidth: latentWidth)
+        let cache = transformer.prefill(text: embeds, conditions: [condition], imageRanges: ranges, layout: layout)
+        var dumped: [String: MLXArray] = [:]
+        for (i, sigma) in sigmas.enumerated() {
+            dumped["velocity.s\(i)"] = transformer(latents: latents, sigma: sigma, cache: cache, rope: layout.target)
+                .asType(.float32)
             eval(Array(dumped.values))
         }
         try save(arrays: dumped, url: url)
@@ -189,6 +245,19 @@ public enum Diagnostics {
             dumped[name] = value.asType(.float32)
         }
         dumped["image"] = image.asType(.float32)
+        try save(arrays: dumped, url: url)
+    }
+
+    /// Encodes `image` ([1, H, W, 4] in [-1, 1]) with the VAE encoder; writes packed normalized `latents`.
+    public static func dumpVAEEncode(model: ModelDirectory, input: URL, to url: URL) throws {
+        guard let image = try loadArrays(url: input)["image"] else {
+            throw WeightError.missingTensor("image", component: input.path)
+        }
+        let vae = try QwenImageVAEEncoder(
+            store: WeightStore(directory: model.vae, component: "vae"), configURL: model.vae.appending(path: "config.json"))
+        var dumped: [String: MLXArray] = [:]
+        let latents = vae.encode(image) { name, value in dumped[name] = value }
+        dumped["latents"] = latents
         try save(arrays: dumped, url: url)
     }
 

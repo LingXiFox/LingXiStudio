@@ -85,16 +85,34 @@ final class GenerationEngine: @unchecked Sendable {
         pipelines[job.modelRoot] = pipeline
         condition.unlock()
         try FileManager.default.createDirectory(at: job.outputDirectory, withIntermediateDirectories: true)
+        // Input images are copied next to the results (`inputs/<sha256>.png`) and the record points there, so an
+        // output folder stays self-contained when it is moved or shared.
+        var request = job.request
+        var inputs = GenerationInputs()
+        let inputDir = job.outputDirectory.appending(path: "inputs")
+        for (i, record) in request.inputs.enumerated() {
+            let source = URL(fileURLWithPath: record.path)
+            let image = try RGBAImage(contentsOf: source)
+            try FileManager.default.createDirectory(at: inputDir, withIntermediateDirectories: true)
+            let copy = inputDir.appending(path: "\(record.sha256).png")
+            if !FileManager.default.fileExists(atPath: copy.path) { try FileManager.default.copyItem(at: source, to: copy) }
+            request.inputs[i].path = copy.path
+            switch record.role {
+            case .condition: inputs.conditions.append(image)
+            case .initial: inputs.initial = image
+            case .mask: inputs.mask = image
+            }
+        }
         for (index, seed) in job.seeds.enumerated() {
             if isCancelled { throw PipelineError.cancelled }
-            var request = job.request
             request.seed = seed
             events(.started(imageIndex: index, seed: seed))
             // This thread has no run loop to drain autoreleased Metal objects (command buffers and the buffers they
             // reference), so each image gets its own pool; otherwise a finished run keeps its memory.
             try autoreleasepool {
                 let image = try pipeline.generate(
-                    request, progress: { events(.progress(imageIndex: index, $0)) }, isCancelled: { self.isCancelled })
+                    request, inputs: inputs, progress: { events(.progress(imageIndex: index, $0)) },
+                    isCancelled: { self.isCancelled })
                 let url = Self.outputURL(in: job.outputDirectory, seed: seed)
                 try ImageWriter.write(image, model: job.modelRoot.lastPathComponent, to: url)
                 events(.saved(imageIndex: index, url: url, seconds: image.totalSeconds, stepSeconds: image.stepSeconds))

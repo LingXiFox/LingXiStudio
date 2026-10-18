@@ -25,8 +25,7 @@ struct ProportionalSplit<First: View, Second: View>: View {
             let firstSize = min(max(available * fraction, minFirst), max(available - minSecond, minFirst))
             let layout = axis == .horizontal ? AnyLayout(HStackLayout(spacing: 0)) : AnyLayout(VStackLayout(spacing: 0))
             layout {
-                first.frame(
-                    width: axis == .horizontal ? firstSize : nil, height: axis == .vertical ? firstSize : nil)
+                first.frame(width: axis == .horizontal ? firstSize : nil, height: axis == .vertical ? firstSize : nil)
                 handle(available: available)
                 second.frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -35,7 +34,7 @@ struct ProportionalSplit<First: View, Second: View>: View {
 
     private func handle(available: CGFloat) -> some View {
         Rectangle()
-            .fill(Color(nsColor: .separatorColor))
+            .fill(Design.hairline)
             .frame(width: axis == .horizontal ? 1 : nil, height: axis == .vertical ? 1 : nil)
             .overlay {
                 Color.clear
@@ -59,6 +58,7 @@ struct ProportionalSplit<First: View, Second: View>: View {
                             .onEnded { _ in dragStart = nil }
                     )
                     .onTapGesture(count: 2) { fraction = defaultFraction }
+                    .help("拖动调整比例，双击恢复默认")
             }
     }
 }
@@ -70,7 +70,8 @@ final class ThumbnailCache {
     private let cache = NSCache<NSURL, NSImage>()
 
     func image(for url: URL, maxPixels: Int = 320) async -> NSImage? {
-        if let hit = cache.object(forKey: url as NSURL) { return hit }
+        let key = "\(url.path)#\(maxPixels)" as NSString
+        if let hit = cache.object(forKey: NSURL(fileURLWithPath: key as String)) { return hit }
         let cg = await Task.detached { () -> CGImage? in
             guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
             let options: [CFString: Any] = [
@@ -82,7 +83,7 @@ final class ThumbnailCache {
         }.value
         guard let cg else { return nil }
         let image = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
-        cache.setObject(image, forKey: url as NSURL)
+        cache.setObject(image, forKey: NSURL(fileURLWithPath: key as String))
         return image
     }
 }
@@ -90,53 +91,67 @@ final class ThumbnailCache {
 struct Thumbnail: View {
     let url: URL
     var size: CGFloat = 96
+    var corner: CGFloat = Design.innerCorner
+    var fit = false
     @State private var image: NSImage?
 
     var body: some View {
         ZStack {
-            Color(nsColor: .quaternaryLabelColor).opacity(0.3)
+            Color.primary.opacity(0.05)
             if let image {
-                Image(nsImage: image).resizable().scaledToFill()
+                if fit {
+                    Image(nsImage: image).resizable().scaledToFit()
+                } else {
+                    Image(nsImage: image).resizable().scaledToFill()
+                }
             } else {
                 ProgressView().controlSize(.small)
             }
         }
         .frame(width: size, height: size)
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-        .task(id: url) { image = await ThumbnailCache.shared.image(for: url) }
+        .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
+        .task(id: url) { image = await ThumbnailCache.shared.image(for: url, maxPixels: Int(size * 2.5)) }
     }
 }
 
-/// Actions available on a finished image, used by the preview toolbar, history grid and context menus.
+/// Actions available on a finished image, used by the preview toolbar, history grid, gallery and context menus.
 struct ImageActionsMenu: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openWindow) private var openWindow
-    let item: HistoryItem
+    let item: Artwork
 
     var body: some View {
-        Button("在独立窗口中查看", systemImage: "arrow.up.left.and.arrow.down.right") { openWindow(id: "viewer", value: item.url) }
+        Button("放大查看", systemImage: "arrow.up.left.and.arrow.down.right") { openWindow(id: "viewer", value: item.url) }
+        Button(model.favorites.contains(item.url.path) ? "取消收藏" : "收藏",
+               systemImage: model.favorites.contains(item.url.path) ? "star.slash" : "star") { model.toggleFavorite(item) }
         Divider()
         Button("复用全部参数", systemImage: "arrow.uturn.backward") { model.reuse(item) }
-            .disabled(item.metadata == nil)
+            .disabled(!item.isReusable)
         Button("使用相同种子再生成", systemImage: "arrow.clockwise") {
             model.reuse(item)
             model.enqueue()
         }
-        .disabled(item.metadata == nil)
+        .disabled(!item.isReusable)
+        Menu("送去创作", systemImage: "paperplane") {
+            Button("作为参考图", systemImage: "photo.stack") { model.send(item, to: .reference) }
+            Button("作为初始图（图生图）", systemImage: "photo.on.rectangle.angled") { model.send(item, to: .initial) }
+            Button("图像编辑", systemImage: "wand.and.stars") { model.send(item, to: .edit) }
+            Button("局部重绘", systemImage: "paintbrush.pointed") { model.send(item, to: .inpaint) }
+        }
         Divider()
         Button("复制图像内容", systemImage: "photo") { ImageFileActions.copyImage(item.url) }
         Button("复制文件", systemImage: "doc.on.doc") { ImageFileActions.copyFile(item.url) }
         Button("复制文件路径", systemImage: "link") { ImageFileActions.copyText(item.url.path) }
-        Button("复制提示词", systemImage: "text.quote") { ImageFileActions.copyText(item.metadata?.request.prompt ?? "") }
-            .disabled(item.metadata == nil)
+        Button("复制提示词", systemImage: "text.quote") { ImageFileActions.copyText(item.prompt ?? "") }
+            .disabled(item.prompt == nil)
         Divider()
-        Button("另存为…", systemImage: "square.and.arrow.down") { ImageFileActions.saveAs(item.url) }
+        Button("另存为…", systemImage: "square.and.arrow.down") { ImageFileActions.saveAs(item, settings: model.exportSettings) }
         Button("用默认应用打开", systemImage: "arrow.up.forward.app") { NSWorkspace.shared.open(item.url) }
-        Button("在 Finder 中显示", systemImage: "folder") {
-            NSWorkspace.shared.activateFileViewerSelecting([item.url])
-        }
+        Button("在 Finder 中显示", systemImage: "folder") { NSWorkspace.shared.activateFileViewerSelecting([item.url]) }
         Divider()
-        Button("移到废纸篓…", systemImage: "trash", role: .destructive) { ImageFileActions.trash(item.url, model: model) }
+        Button("移到废纸篓…", systemImage: "trash", role: .destructive) {
+            if ImageFileActions.confirmTrash(count: 1, name: item.url.lastPathComponent) { model.trashArtworks([item]) }
+        }
     }
 }
 
@@ -158,42 +173,66 @@ enum ImageFileActions {
         NSPasteboard.general.setString(text, forType: .string)
     }
 
-    /// Copies the PNG and its JSON record to a user-chosen place. Overwriting needs the save panel's own confirmation.
-    static func saveAs(_ url: URL) {
+    /// Exports one image in the chosen format with its record; the save panel asks before replacing a file.
+    static func saveAs(_ item: Artwork, settings: ExportSettings) {
         let panel = NSSavePanel()
-        panel.allowedContentTypes = [.png]
-        panel.nameFieldStringValue = url.lastPathComponent
-        guard panel.runModal() == .OK, let target = panel.url, target != url else { return }
-        let fm = FileManager.default
-        let sidecar = url.deletingPathExtension().appendingPathExtension("json")
-        let targetSidecar = target.deletingPathExtension().appendingPathExtension("json")
+        panel.allowedContentTypes = [settings.format.type]
+        panel.nameFieldStringValue = settings.fileName(for: item, index: 1)
+        guard panel.runModal() == .OK, let target = panel.url, target != item.url else { return }
         do {
-            for (from, to) in [(url, target), (sidecar, targetSidecar)] where fm.fileExists(atPath: from.path) {
-                if fm.fileExists(atPath: to.path) { try fm.trashItem(at: to, resultingItemURL: nil) }
-                try fm.copyItem(at: from, to: to)
+            if FileManager.default.fileExists(atPath: target.path) {
+                try FileManager.default.trashItem(at: target, resultingItemURL: nil)
             }
+            var single = settings
+            single.template = target.deletingPathExtension().lastPathComponent
+            _ = try single.export(item, index: 1, to: target.deletingLastPathComponent())
         } catch {
             NSAlert(error: error).runModal()
         }
     }
 
-    static func trash(_ url: URL, model: AppModel) {
+    static func confirmTrash(count: Int, name: String) -> Bool {
         let alert = NSAlert()
-        alert.messageText = "把「\(url.lastPathComponent)」移到废纸篓？"
-        alert.informativeText = "图片和它的参数记录（JSON）会一起移到废纸篓，可从废纸篓恢复。"
+        alert.messageText = count == 1 ? "把「\(name)」移到废纸篓？" : "把选中的 \(count) 张图移到废纸篓？"
+        alert.informativeText = "图片和它的参数记录会一起移到废纸篓，可从废纸篓恢复。"
         alert.addButton(withTitle: "移到废纸篓")
         alert.addButton(withTitle: "取消")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        let sidecar = url.deletingPathExtension().appendingPathExtension("json")
-        for file in [url, sidecar] where FileManager.default.fileExists(atPath: file.path) {
-            try? FileManager.default.trashItem(at: file, resultingItemURL: nil)
-        }
-        if model.selection == url { model.selection = nil }
-        model.reloadHistory()
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    static func chooseFolder(prompt: String = "选择") -> URL? {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.prompt = prompt
+        return panel.runModal() == .OK ? panel.url : nil
+    }
+
+    static func chooseImages(multiple: Bool = true) -> [URL] {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.image]
+        panel.allowsMultipleSelection = multiple
+        return panel.runModal() == .OK ? panel.urls : []
+    }
+
+    static func ask(_ title: String, placeholder: String = "", initial: String = "") -> String? {
+        let alert = NSAlert()
+        alert.messageText = title
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
+        field.placeholderString = placeholder
+        field.stringValue = initial
+        alert.accessoryView = field
+        alert.addButton(withTitle: "确定")
+        alert.addButton(withTitle: "取消")
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? nil : text
     }
 }
 
-/// A labelled value row for the metrics and info grids.
+/// A labelled value row for metric grids.
 struct InfoRow: View {
     let label: String
     let value: String
@@ -208,23 +247,25 @@ struct InfoRow: View {
     }
 }
 
-/// Section header with an optional trailing accessory, used for the left-panel groups.
-struct SectionHeader<Accessory: View>: View {
-    let title: String
-    let symbol: String
-    @ViewBuilder var accessory: Accessory
+/// Multi-line text editor with a placeholder and native field styling.
+struct PromptEditor: View {
+    @Binding var text: String
+    var placeholder: String
+    var minHeight: CGFloat = 90
 
     var body: some View {
-        HStack {
-            Label(title, systemImage: symbol).font(.headline)
-            Spacer()
-            accessory
-        }
-    }
-}
-
-extension SectionHeader where Accessory == EmptyView {
-    init(title: String, symbol: String) {
-        self.init(title: title, symbol: symbol) { EmptyView() }
+        TextEditor(text: $text)
+            .font(.body)
+            .scrollContentBackground(.hidden)
+            .padding(.horizontal, 6).padding(.vertical, 7)
+            .frame(minHeight: minHeight, maxHeight: minHeight * 2.6)
+            .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: Design.innerCorner))
+            .overlay(RoundedRectangle(cornerRadius: Design.innerCorner).strokeBorder(Design.hairline))
+            .overlay(alignment: .topLeading) {
+                if text.isEmpty {
+                    Text(placeholder).foregroundStyle(.tertiary).padding(.horizontal, 11).padding(.vertical, 7)
+                        .allowsHitTesting(false)
+                }
+            }
     }
 }

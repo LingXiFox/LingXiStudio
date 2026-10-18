@@ -187,11 +187,33 @@ final class QwenImageTransformer: ParameterContainer {
 
     // MARK: - Geometry
 
-    /// 3-axis RoPE angles. Text advances one shared position on every axis; the target image freezes the frame
-    /// axis at the text length and lays tokens on a height/width grid centred on zero.
+    /// A condition image in the joint sequence: its packed normalized VAE latents and latent grid size.
+    struct ConditionImage {
+        let latents: MLXArray  // [1, height * width, 64]
+        let height: Int
+        let width: Int
+    }
+
+    /// Joint-sequence layout of the prefix (text + condition images) and the target image.
+    struct Layout {
+        let prefix: Rope
+        let target: Rope
+        /// Condition image blocks in prefix coordinates (each internally bidirectional).
+        let blocks: [Range<Int>]
+        let prefixLength: Int
+    }
+
+    /// 3-axis RoPE angles (`QwenImage21Rope`). Text advances one shared position on every axis; every image block
+    /// freezes the frame axis at the position the preceding text reached and lays its tokens on a height/width grid
+    /// centred on zero, after which the position advances by `max(height, width)`.
     ///
+    /// `textLength` counts the encoder sequence including the `<|image_pad|>` slots in `imageRanges`; each slot
+    /// stands for a 2x2 group of condition latents, which replace those slots in the joint sequence.
     /// Angles follow the reference's fp32 arithmetic: `1 / theta^(2k/d)` and `position * omega` in fp32.
-    func rope(textLength: Int, latentHeight: Int, latentWidth: Int) -> (text: Rope, image: Rope) {
+    func layout(
+        textLength: Int, imageRanges: [Range<Int>] = [], conditions: [(height: Int, width: Int)] = [],
+        latentHeight: Int, latentWidth: Int
+    ) -> Layout {
         func frequencies(_ dim: Int) -> [Float] {
             stride(from: 0, to: dim, by: 2).map { 1 / powf(Float(config.ropeTheta), Float($0) / Float(dim)) }
         }
@@ -209,16 +231,43 @@ final class QwenImageTransformer: ParameterContainer {
             let array = MLXArray(angles, [positions.count, half])
             return Rope(cos: MLX.cos(array), sin: MLX.sin(array))
         }
-
-        let text = table((0..<textLength).map { ($0, $0, $0) })
-        var image: [(Int, Int, Int)] = []
-        image.reserveCapacity(latentHeight * latentWidth)
-        for h in -(latentHeight - latentHeight / 2)..<(latentHeight / 2) {
-            for w in -(latentWidth - latentWidth / 2)..<(latentWidth / 2) {
-                image.append((textLength, h, w))
+        func grid(_ frame: Int, _ height: Int, _ width: Int) -> [(Int, Int, Int)] {
+            var out: [(Int, Int, Int)] = []
+            out.reserveCapacity(height * width)
+            for h in -(height - height / 2)..<(height / 2) {
+                for w in -(width - width / 2)..<(width / 2) { out.append((frame, h, w)) }
             }
+            return out
         }
-        return (text, table(image))
+
+        var prefix: [(Int, Int, Int)] = []
+        var blocks: [Range<Int>] = []
+        var position = 0
+        var cursor = 0
+        for (range, size) in zip(imageRanges, conditions) {
+            for _ in cursor..<range.lowerBound {
+                prefix.append((position, position, position))
+                position += 1
+            }
+            let start = prefix.count
+            prefix += grid(position, size.height, size.width)
+            blocks.append(start..<prefix.count)
+            position += max(size.height, size.width)
+            cursor = range.upperBound
+        }
+        for _ in cursor..<textLength {
+            prefix.append((position, position, position))
+            position += 1
+        }
+        return Layout(
+            prefix: table(prefix), target: table(grid(position, latentHeight, latentWidth)), blocks: blocks,
+            prefixLength: prefix.count)
+    }
+
+    /// Text-only layout (kept for the text-to-image call sites).
+    func rope(textLength: Int, latentHeight: Int, latentWidth: Int) -> (text: Rope, image: Rope) {
+        let l = layout(textLength: textLength, latentHeight: latentHeight, latentWidth: latentWidth)
+        return (l.prefix, l.target)
     }
 
     // MARK: - Conditioning
@@ -320,22 +369,86 @@ final class QwenImageTransformer: ParameterContainer {
         MLXFast.layerNorm(x, eps: config.eps)
     }
 
+    /// Consecutive text runs and image blocks covering `0..<length`.
+    static func segments(length: Int, blocks: [Range<Int>]) -> [(range: Range<Int>, isImage: Bool)] {
+        var out: [(Range<Int>, Bool)] = []
+        var cursor = 0
+        for block in blocks.sorted(by: { $0.lowerBound < $1.lowerBound }) {
+            if block.lowerBound > cursor { out.append((cursor..<block.lowerBound, false)) }
+            out.append((block, true))
+            cursor = block.upperBound
+        }
+        if cursor < length { out.append((cursor..<length, false)) }
+        return out
+    }
+
     /// Runs the text prefix through every block once and caches its post-RoPE keys/values.
     func prefill(text: MLXArray, rope: Rope) -> TextCache {
-        let length = text.dim(1)
+        prefill(text: text, conditions: [], imageRanges: [], layout: nil, rope: rope)
+    }
+
+    /// Runs the joint prefix (text with condition images in place of their `<|image_pad|>` slots) through every
+    /// block once, with `t = 0` modulation (`causal_condition`) and the block-causal mask: causal over the sequence,
+    /// bidirectional inside each condition image. Caches the post-RoPE keys/values for the denoising steps.
+    func prefill(
+        text: MLXArray, conditions: [ConditionImage], imageRanges: [Range<Int>], layout: Layout?, rope: Rope? = nil
+    ) -> TextCache {
         let mod = modulationRow(modulationParameters(timeEmbedding(sigma: 0)), row: 1)
         let scale = 1 / Float(config.headDim).squareRoot()
-        var hidden = textProjection(text)
+        let projected = textProjection(text)
+        var hidden = projected
+        if !conditions.isEmpty {
+            var pieces: [MLXArray] = []
+            var cursor = 0
+            for (range, condition) in zip(imageRanges, conditions) {
+                if range.lowerBound > cursor { pieces.append(projected[0..., cursor..<range.lowerBound]) }
+                pieces.append(linear("img_in", imgIn, condition.latents.asType(projected.dtype)))
+                cursor = range.upperBound
+            }
+            if cursor < projected.dim(1) { pieces.append(projected[0..., cursor...]) }
+            hidden = concatenated(pieces, axis: 1)
+        }
+        let length = hidden.dim(1)
+        let ropeTable = layout?.prefix ?? rope!
+        // The block-causal mask (`j <= i`, or both in the same image block) is decomposed into one attention call per
+        // segment, as the reference's segment processor does: a text run attends causally to everything before it,
+        // an image block attends to everything up to its own end without a mask. Each call keeps MLX's fused
+        // attention kernel; a dense [P, P] mask would force the unfused path (10x slower at 4k tokens).
+        let segments = Self.segments(length: length, blocks: layout?.blocks ?? [])
         var keys: [MLXArray] = []
         var values: [MLXArray] = []
         for index in blocks.indices {
-            let (q, k, v) = project(index, layerNorm(hidden) * (1 + mod.scale1), rope)
+            let (q, k, v) = project(index, layerNorm(hidden) * (1 + mod.scale1), ropeTable)
             keys.append(k)
             values.append(v)
-            // The last block's text output feeds nothing downstream, only its K/V matter.
+            // The last block's prefix output feeds nothing downstream, only its K/V matter.
             if index == blocks.count - 1 { break }
-            let attention = MLXFast.scaledDotProductAttention(
-                queries: q, keys: k, values: v, scale: scale, mask: .causal)
+            let attention: MLXArray
+            if segments.count == 1 {
+                attention = MLXFast.scaledDotProductAttention(queries: q, keys: k, values: v, scale: scale, mask: .causal)
+            } else {
+                attention = concatenated(
+                    segments.map { segment in
+                        let queries = q[0..., 0..., segment.range]
+                        let visibleKeys = k[0..., 0..., ..<segment.range.upperBound]
+                        let visibleValues = v[0..., 0..., ..<segment.range.upperBound]
+                        let mask: MLXFast.ScaledDotProductAttentionMaskMode
+                        if segment.isImage {
+                            mask = .none
+                        } else if segment.range.lowerBound == 0 {
+                            mask = .causal
+                        } else {
+                            // Text after an image: all earlier keys, then causal within the run.
+                            let rows = MLXArray(Int32(segment.range.lowerBound)..<Int32(segment.range.upperBound))
+                            let cols = MLXArray(Int32(0)..<Int32(segment.range.upperBound))
+                            mask = .array(
+                                (cols.expandedDimensions(axis: 0) .<= rows.expandedDimensions(axis: 1))
+                                    .reshaped(1, 1, segment.range.count, segment.range.upperBound))
+                        }
+                        return MLXFast.scaledDotProductAttention(
+                            queries: queries, keys: visibleKeys, values: visibleValues, scale: scale, mask: mask)
+                    }, axis: 2)
+            }
             hidden = hidden + mod.gate1 * attentionOut(index, merge(attention, length: length))
             hidden = hidden + mod.gate2 * feedForward(index, layerNorm(hidden) * (1 + mod.scale2))
             eval([hidden, k, v])

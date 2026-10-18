@@ -1,6 +1,39 @@
 import Foundation
 import MLX
 
+/// Creation modes. Text-to-image, reference and edit follow the official Qwen-Image-2.1 pipeline; image-to-image
+/// (SDEdit start from a noised image) and inpainting (edit conditioning plus per-step latent blending) are generic
+/// diffusion methods applied on top of it, as Qwen-Image-2.1 has no official pipeline for them.
+public enum GenerationMode: String, Codable, Sendable, CaseIterable {
+    case textToImage = "text-to-image"
+    case reference
+    case imageToImage = "image-to-image"
+    case edit
+    case inpaint
+}
+
+/// Where an input image came from, recorded with every result so a run can be reproduced.
+public struct InputImageRecord: Codable, Sendable, Hashable {
+    public enum Role: String, Codable, Sendable { case condition, initial, mask }
+    public var role: Role
+    /// The stored copy the run used (inside the output folder's `inputs/`), or the original file.
+    public var path: String
+    /// File the user picked, when different from `path`.
+    public var source: String?
+    public var sha256: String
+    public var width: Int
+    public var height: Int
+
+    public init(role: Role, path: String, source: String?, sha256: String, width: Int, height: Int) {
+        self.role = role
+        self.path = path
+        self.source = source
+        self.sha256 = sha256
+        self.width = width
+        self.height = height
+    }
+}
+
 public struct GenerationRequest: Codable, Sendable {
     public var prompt: String
     public var negativePrompt: String?
@@ -12,10 +45,22 @@ public struct GenerationRequest: Codable, Sendable {
     public var seed: UInt64
     public var scheduler: SamplerSchedule
     public var loras: [LoRASpec]
+    public var mode: GenerationMode
+    /// Input images in the order the pipeline uses them (conditions first, then the initial image and mask).
+    public var inputs: [InputImageRecord]
+    /// Share of the schedule that runs from the (noised) initial image: 1 starts from pure noise.
+    public var strength: Float
+    /// Inpainting: blur radius (pixels) of the mask edge used when pasting the result over the original.
+    public var maskFeather: Int
+    public var maskInvert: Bool
+    /// Inpainting: keep the original pixels outside the (feathered) mask exactly.
+    public var keepUnmaskedPixels: Bool
 
     public init(
         prompt: String, negativePrompt: String? = nil, width: Int = 1024, height: Int = 1024, steps: Int = 40,
-        trueCFGScale: Float = 1.0, seed: UInt64, scheduler: SamplerSchedule = .linear, loras: [LoRASpec] = []
+        trueCFGScale: Float = 1.0, seed: UInt64, scheduler: SamplerSchedule = .linear, loras: [LoRASpec] = [],
+        mode: GenerationMode = .textToImage, inputs: [InputImageRecord] = [], strength: Float = 1,
+        maskFeather: Int = 8, maskInvert: Bool = false, keepUnmaskedPixels: Bool = true
     ) {
         self.prompt = prompt
         self.negativePrompt = negativePrompt
@@ -26,11 +71,55 @@ public struct GenerationRequest: Codable, Sendable {
         self.seed = seed
         self.scheduler = scheduler
         self.loras = loras
+        self.mode = mode
+        self.inputs = inputs
+        self.strength = strength
+        self.maskFeather = maskFeather
+        self.maskInvert = maskInvert
+        self.keepUnmaskedPixels = keepUnmaskedPixels
+    }
+
+    // Records written before the image modes existed decode as text-to-image.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        prompt = try c.decode(String.self, forKey: .prompt)
+        negativePrompt = try c.decodeIfPresent(String.self, forKey: .negativePrompt)
+        width = try c.decode(Int.self, forKey: .width)
+        height = try c.decode(Int.self, forKey: .height)
+        steps = try c.decode(Int.self, forKey: .steps)
+        trueCFGScale = try c.decode(Float.self, forKey: .trueCFGScale)
+        seed = try c.decode(UInt64.self, forKey: .seed)
+        scheduler = try c.decodeIfPresent(SamplerSchedule.self, forKey: .scheduler) ?? .linear
+        loras = try c.decodeIfPresent([LoRASpec].self, forKey: .loras) ?? []
+        mode = try c.decodeIfPresent(GenerationMode.self, forKey: .mode) ?? .textToImage
+        inputs = try c.decodeIfPresent([InputImageRecord].self, forKey: .inputs) ?? []
+        strength = try c.decodeIfPresent(Float.self, forKey: .strength) ?? 1
+        maskFeather = try c.decodeIfPresent(Int.self, forKey: .maskFeather) ?? 8
+        maskInvert = try c.decodeIfPresent(Bool.self, forKey: .maskInvert) ?? false
+        keepUnmaskedPixels = try c.decodeIfPresent(Bool.self, forKey: .keepUnmaskedPixels) ?? true
     }
 
     public var usesTrueCFG: Bool {
         trueCFGScale > 1 && !(negativePrompt ?? "").isEmpty
     }
+}
+
+/// Image data for a request (the request itself only records where the images came from).
+public struct GenerationInputs: Sendable {
+    /// Condition images in prompt order (Picture 1, 2, ...). For edit and inpaint the first one is the main image.
+    public var conditions: [RGBAImage]
+    /// Starting image for image-to-image, partial-strength edit and inpaint.
+    public var initial: RGBAImage?
+    /// Inpainting mask: bright = repaint.
+    public var mask: RGBAImage?
+
+    public init(conditions: [RGBAImage] = [], initial: RGBAImage? = nil, mask: RGBAImage? = nil) {
+        self.conditions = conditions
+        self.initial = initial
+        self.mask = mask
+    }
+
+    public static let none = GenerationInputs()
 }
 
 public enum SamplerSchedule: String, Codable, Sendable {
@@ -41,7 +130,7 @@ public enum SamplerSchedule: String, Codable, Sendable {
 }
 
 public enum GenerationStage: String, Codable, Sendable {
-    case validating, loadingTextEncoder, encodingPrompt, loadingTransformer, prefill, denoising
+    case validating, loadingTextEncoder, encodingPrompt, encodingImages, loadingTransformer, prefill, denoising
     case loadingVAE, decoding, done
 }
 
@@ -95,9 +184,11 @@ public enum PipelineError: Error, CustomStringConvertible {
     case cancelled
     case emptyPrompt
     case scheduleSteps(SamplerSchedule, Int)
+    case missingInput(String)
 
     public var description: String {
         switch self {
+        case .missingInput(let what): "Missing input: \(what)"
         case .invalidSize(let w, let h): "Width and height must be positive multiples of 32 (got \(w)x\(h))"
         case .cancelled: "Generation cancelled"
         case .emptyPrompt: "Prompt is empty"
@@ -112,7 +203,7 @@ public enum PipelineError: Error, CustomStringConvertible {
 /// which keeps a BF16 run within a 32 GB unified-memory budget.
 public final class QwenImagePipeline: @unchecked Sendable {
     public let model: ModelDirectory
-    private let tokenizer: QwenTokenizer
+    let tokenizer: QwenTokenizer
     private let scheduleConfig: FlowMatchSchedule.Config
 
     static let systemPrompt = "Comprehend and analyze the provided prompt."
@@ -148,6 +239,7 @@ public final class QwenImagePipeline: @unchecked Sendable {
 
     public func generate(
         _ request: GenerationRequest,
+        inputs: GenerationInputs = .none,
         progress: @escaping (GenerationProgress) -> Void = { _ in },
         isCancelled: @escaping () -> Bool = { false }
     ) throws -> GeneratedImage {
@@ -157,6 +249,7 @@ public final class QwenImagePipeline: @unchecked Sendable {
         if request.scheduler == .viggleTurbo, request.steps != FlowMatchSchedule.viggleTurboNodes.count {
             throw PipelineError.scheduleSteps(.viggleTurbo, FlowMatchSchedule.viggleTurboNodes.count)
         }
+        let plan = try ModePlan(request: request, inputs: inputs)
         let start = Date()
         var timings: [StageTiming] = []
         var stageStart = Date()
@@ -168,10 +261,17 @@ public final class QwenImagePipeline: @unchecked Sendable {
         defer { releaseStageMemory() }
         _ = sampler.takePeak()
 
+        let latentHeight = request.height / 16
+        let latentWidth = request.width / 16
+        let imageTokens = latentHeight * latentWidth
+        let schedule = schedule(for: request, imageTokens: imageTokens)
+        let startIndex = plan.startIndex(steps: schedule.steps)
+        let stepsToRun = schedule.steps - startIndex
+
         func report(_ stage: GenerationStage, _ fraction: Double, step: Int = 0, secondsPerStep: Double? = nil) {
             progress(
                 GenerationProgress(
-                    stage: stage, fraction: fraction, step: step, totalSteps: request.steps,
+                    stage: stage, fraction: fraction, step: step, totalSteps: stepsToRun,
                     secondsPerStep: secondsPerStep, elapsed: Date().timeIntervalSince(start),
                     memory: .current()))
         }
@@ -185,42 +285,111 @@ public final class QwenImagePipeline: @unchecked Sendable {
             if isCancelled() { throw PipelineError.cancelled }
         }
 
-        // 1. Text encoding. The encoder is released before the transformer is loaded.
+        // 1. Prompt encoding (with the vision tower for condition images). Released before the transformer loads.
         report(.validating, 0)
-        let positive = try promptTokens(request.prompt)
-        let negative = request.usesTrueCFG ? try promptTokens(request.negativePrompt ?? "") : nil
+        let conditionSizes = plan.conditions.map { ($0.width, $0.height) }
+        struct Encoded {
+            let embedding: MLXArray
+            let imageRanges: [Range<Int>]
+        }
+        var prompts: [(ids: [Int], drop: Int, ranges: [Range<Int>], positions: [[Int32]]?)] = []
+        for text in [request.prompt] + (request.usesTrueCFG ? [request.negativePrompt ?? ""] : []) {
+            if plan.conditions.isEmpty {
+                let tokens = try promptTokens(text)
+                prompts.append((tokens.ids, tokens.drop, [], nil))
+            } else {
+                let mp = try MultimodalPrompt(prompt: text, imageSizes: conditionSizes, tokenizer: tokenizer)
+                prompts.append((mp.ids, mp.drop, mp.imageRanges, mp.positions))
+            }
+        }
         finish(.validating)
 
         report(.loadingTextEncoder, 0)
-        var embeddings: [MLXArray] = []
+        var encoded: [Encoded] = []
         // Each stage runs in its own autorelease pool: Metal command buffers are autoreleased and keep the buffers
         // they used alive, and a thread without a run loop would otherwise hold them until the whole run ends.
         try autoreleasepool {
-            let encoder = try QwenTextEncoder(store: WeightStore(directory: model.textEncoder, component: "text_encoder"))
+            let store = try WeightStore(directory: model.textEncoder, component: "text_encoder")
+            var vision: [QwenVisionEncoder.Output] = []
+            if !plan.conditions.isEmpty {
+                try autoreleasepool {
+                    let tower = try QwenVisionEncoder(store: store)
+                    tower.materialize()
+                    for image in plan.conditions {
+                        let out = tower.encode(image)
+                        eval([out.embeds] + out.deepstack)
+                        vision.append(out)
+                    }
+                }
+                releaseStageMemory()
+            }
+            let encoder = try QwenTextEncoder(store: store)
             encoder.materialize { report(.loadingTextEncoder, $0) }
             finish(.loadingTextEncoder)
             try checkCancelled()
 
             report(.encodingPrompt, 0)
-            for tokens in [positive] + (negative.map { [$0] } ?? []) {
-                let hidden = encoder(tokens.ids)
-                let embedding = hidden[0..., tokens.drop...]
+            let visionInput: (([[Int32]], [Range<Int>]) -> QwenTextEncoder.VisionInput)? =
+                vision.isEmpty
+                ? nil
+                : { positions, ranges in
+                    QwenTextEncoder.VisionInput(
+                        embeds: concatenated(vision.map(\.embeds), axis: 0),
+                        deepstack: (0..<vision[0].deepstack.count).map { i in
+                            concatenated(vision.map { $0.deepstack[i] }, axis: 0)
+                        },
+                        ranges: ranges, positions: positions)
+                }
+            for prompt in prompts {
+                let hidden = encoder(
+                    prompt.ids, vision: prompt.positions.flatMap { p in visionInput?(p, prompt.ranges) })
+                let embedding = hidden[0..., prompt.drop...]
                 eval(embedding)
-                embeddings.append(embedding)
+                encoded.append(
+                    Encoded(
+                        embedding: embedding,
+                        imageRanges: prompt.ranges.map { ($0.lowerBound - prompt.drop)..<($0.upperBound - prompt.drop) }))
             }
         }
         releaseStageMemory()
         finish(.encodingPrompt)
         try checkCancelled()
 
-        // 2. Denoising.
+        // 2. VAE encoding of condition images and of the initial image.
+        var conditionLatents: [QwenImageTransformer.ConditionImage] = []
+        var initialLatents: MLXArray?
+        if !plan.conditions.isEmpty || plan.initial != nil {
+            report(.encodingImages, 0)
+            try autoreleasepool {
+                let encoder = try QwenImageVAEEncoder(
+                    store: WeightStore(directory: model.vae, component: "vae"),
+                    configURL: model.vae.appending(path: "config.json"))
+                encoder.materialize()
+                for image in plan.conditions {
+                    let latents = encoder.encode(image.vaeInput()).asType(.bfloat16)
+                    eval(latents)
+                    conditionLatents.append(.init(latents: latents, height: image.height / 16, width: image.width / 16))
+                }
+                if let initial = plan.initial {
+                    let latents = encoder.encode(initial.vaeInput()).asType(.bfloat16)
+                    eval(latents)
+                    initialLatents = latents
+                }
+            }
+            releaseStageMemory()
+            finish(.encodingImages)
+            try checkCancelled()
+        }
+
+        // 3. Denoising.
         report(.loadingTransformer, 0)
-        let latentHeight = request.height / 16
-        let latentWidth = request.width / 16
-        let imageTokens = latentHeight * latentWidth
-        let schedule = schedule(for: request, imageTokens: imageTokens)
         var stepTimes: [Double] = []
-        var latents = MLXRandom.normal([1, imageTokens, 64], key: MLXRandom.key(request.seed)).asType(.bfloat16)
+        let noise = MLXRandom.normal([1, imageTokens, 64], key: MLXRandom.key(request.seed)).asType(.bfloat16)
+        let latentMask = plan.latentMask(height: latentHeight, width: latentWidth)
+        var latents = noise
+        if let initialLatents, startIndex > 0 {
+            latents = Self.scaleNoise(initialLatents, sigma: schedule.sigmas[startIndex], noise: noise)
+        }
         try autoreleasepool {
             let transformer = try QwenImageTransformer(
                 store: WeightStore(directory: model.transformer, component: "transformer"))
@@ -234,17 +403,21 @@ public final class QwenImagePipeline: @unchecked Sendable {
 
             report(.prefill, 0)
             var caches: [(QwenImageTransformer.TextCache, QwenImageTransformer.Rope)] = []
-            for embedding in embeddings {
-                let rope = transformer.rope(
-                    textLength: embedding.dim(1), latentHeight: latentHeight, latentWidth: latentWidth)
-                let cache = transformer.prefill(text: embedding, rope: rope.text)
-                eval(cache.arrays + [rope.image.cos, rope.image.sin])
-                caches.append((cache, rope.image))
+            for item in encoded {
+                let layout = transformer.layout(
+                    textLength: item.embedding.dim(1), imageRanges: item.imageRanges,
+                    conditions: conditionLatents.map { ($0.height, $0.width) }, latentHeight: latentHeight,
+                    latentWidth: latentWidth)
+                let cache = transformer.prefill(
+                    text: item.embedding, conditions: conditionLatents, imageRanges: item.imageRanges, layout: layout)
+                eval(cache.arrays + [layout.target.cos, layout.target.sin])
+                caches.append((cache, layout.target))
             }
-            embeddings.removeAll()
+            encoded.removeAll()
+            conditionLatents.removeAll()
             finish(.prefill)
 
-            for step in 0..<schedule.steps {
+            for step in startIndex..<schedule.steps {
                 try checkCancelled()
                 let stepStart = Date()
                 let sigma = schedule.sigmas[step]
@@ -255,12 +428,19 @@ public final class QwenImagePipeline: @unchecked Sendable {
                     velocity = unconditional + request.trueCFGScale * (velocity - unconditional)
                 }
                 latents = schedule.step(latents: latents, velocity: velocity, index: step)
+                if let latentMask, let initialLatents {
+                    // Outside the mask the sample follows the original image, noised to the next sigma
+                    // (`QwenImageEditInpaintPipeline`); after the last step that is the clean original.
+                    let next = schedule.sigmas[step + 1]
+                    let original = next > 0 ? Self.scaleNoise(initialLatents, sigma: next, noise: noise) : initialLatents
+                    latents = ((1 - latentMask) * original + latentMask * latents).asType(latents.dtype)
+                }
                 eval(latents)
                 stepTimes.append(Date().timeIntervalSince(stepStart))
                 // The first step includes kernel compilation, so the rate excludes it once more are available.
                 let recent = stepTimes.count > 1 ? Array(stepTimes.dropFirst().suffix(5)) : stepTimes
                 report(
-                    .denoising, Double(step + 1) / Double(schedule.steps), step: step + 1,
+                    .denoising, Double(step - startIndex + 1) / Double(stepsToRun), step: step - startIndex + 1,
                     secondsPerStep: recent.reduce(0, +) / Double(recent.count))
             }
         }
@@ -268,7 +448,7 @@ public final class QwenImagePipeline: @unchecked Sendable {
         finish(.denoising)
         try checkCancelled()
 
-        // 3. Decoding.
+        // 4. Decoding.
         report(.loadingVAE, 0)
         let pixels = try autoreleasepool { () throws -> MLXArray in
             let vae = try QwenImageVAEDecoder(
@@ -279,7 +459,10 @@ public final class QwenImagePipeline: @unchecked Sendable {
 
             report(.decoding, 0)
             let image = vae.decode(latents, latentHeight: latentHeight, latentWidth: latentWidth)
-            let pixels = QwenImagePipeline.toRGBA8(image)
+            var pixels = QwenImagePipeline.toRGBA8(image)
+            if let composite = plan.pixelComposite(width: request.width, height: request.height) {
+                pixels = composite(pixels)
+            }
             eval(pixels)
             return pixels
         }
@@ -291,6 +474,11 @@ public final class QwenImagePipeline: @unchecked Sendable {
         return GeneratedImage(
             width: request.width, height: request.height, rgba: rgba, request: request, timings: timings,
             peakMemoryBytes: Memory.peakMemory, totalSeconds: Date().timeIntervalSince(start), stepSeconds: stepTimes)
+    }
+
+    /// Flow-matching forward noising (`FlowMatchEulerDiscreteScheduler.scale_noise`): `sigma * noise + (1 - sigma) * x`.
+    static func scaleNoise(_ x: MLXArray, sigma: Float, noise: MLXArray) -> MLXArray {
+        (sigma * noise.asType(.float32) + (1 - sigma) * x.asType(.float32)).asType(x.dtype)
     }
 
     /// Returns a finished stage's buffers to the system. Command buffer completion handlers can still hold the stage's

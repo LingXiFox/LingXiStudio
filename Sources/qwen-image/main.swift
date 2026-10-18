@@ -25,6 +25,11 @@ let usage = """
       --output <file.png>      Output path (default ./outputs/<timestamp>-<seed>.png)
       --lora <file[:scale]>    LoRA applied at runtime, base weights untouched (comma-separate several)
       --scheduler <name>       linear (default) or viggle_turbo (6 steps)
+      --mode <name>            text-to-image (default), reference, edit, img2img, inpaint
+      --image <a.png,b.png>    Condition images (reference / edit / inpaint: the first is the main image)
+      --init <file>            Start image for img2img
+      --mask <file>            Inpaint mask, white = repaint (--invert 1, --feather <px>, --keep-unmasked 0)
+      --strength <0..1>        Share of the schedule run from the noised start image (default 1)
     """
 
 struct Arguments {
@@ -69,14 +74,49 @@ func loraSpecs() -> [LoRASpec] {
     }
 }
 
-func makeRequest(prompt: String) -> GenerationRequest {
-    GenerationRequest(
+/// Request plus decoded input images for `--mode` (reference / edit / img2img / inpaint).
+func makeRequest(prompt: String) throws -> (GenerationRequest, GenerationInputs) {
+    let mode: GenerationMode =
+        switch args.string("mode") ?? "text-to-image" {
+        case "reference": .reference
+        case "edit": .edit
+        case "img2img", "image-to-image": .imageToImage
+        case "inpaint": .inpaint
+        default: .textToImage
+        }
+    func paths(_ key: String) -> [URL] {
+        (args.string(key) ?? "").split(separator: ",").map {
+            URL(fileURLWithPath: (String($0) as NSString).expandingTildeInPath)
+        }
+    }
+    var records: [InputImageRecord] = []
+    var inputs = GenerationInputs()
+    for url in paths("image") {
+        let (record, image) = try InputImageRecord.make(role: .condition, url: url)
+        records.append(record)
+        inputs.conditions.append(image)
+    }
+    if let url = paths("init").first {
+        let (record, image) = try InputImageRecord.make(role: .initial, url: url)
+        records.append(record)
+        inputs.initial = image
+    }
+    if let url = paths("mask").first {
+        let (record, image) = try InputImageRecord.make(role: .mask, url: url)
+        records.append(record)
+        inputs.mask = image
+    }
+    let size = GenerationMode.defaultSize(mode: mode, conditions: inputs.conditions, initial: inputs.initial)
+    let request = GenerationRequest(
         prompt: prompt, negativePrompt: args.string("negative-prompt"),
-        width: args.int("width", 1024), height: args.int("height", 1024), steps: args.int("steps", 40),
-        trueCFGScale: args.float("cfg", 1.0),
+        width: args.int("width", size?.width ?? 1024), height: args.int("height", size?.height ?? 1024),
+        steps: args.int("steps", 40), trueCFGScale: args.float("cfg", 1.0),
         seed: args.string("seed").flatMap(UInt64.init) ?? UInt64.random(in: 0..<UInt64(UInt32.max)),
         scheduler: SamplerSchedule(rawValue: args.string("scheduler") ?? "linear") ?? .linear,
-        loras: loraSpecs())
+        loras: loraSpecs(), mode: mode, inputs: records, strength: args.float("strength", 1),
+        maskFeather: args.int("feather", 8), maskInvert: args.string("invert") == "1",
+        keepUnmaskedPixels: args.string("keep-unmasked") != "0")
+    return (request, inputs)
 }
 
 func formatBytes(_ bytes: Int) -> String {
@@ -96,13 +136,13 @@ do {
         for c in components where c.bytes > 0 {
             print("✓ \(c.name): \(c.files) file(s), \(formatBytes(Int(c.bytes)))")
         }
-        let request = makeRequest(prompt: args.require("prompt"))
+        let (request, inputs) = try makeRequest(prompt: args.require("prompt"))
         print("seed \(request.seed), \(request.width)x\(request.height), \(request.steps) steps"
             + (request.usesTrueCFG ? ", true CFG \(request.trueCFGScale)" : ""))
 
         let pipeline = try QwenImagePipeline(model: model)
         var lastStage: GenerationStage?
-        let image = try pipeline.generate(request) { p in
+        let image = try pipeline.generate(request, inputs: inputs) { p in
             if p.stage != lastStage {
                 if lastStage != nil { print("") }
                 lastStage = p.stage
@@ -159,6 +199,10 @@ do {
     case "debug-text":
         try Diagnostics.dumpTextEncoder(model: model, prompt: args.require("prompt"), to: args.url("out")!)
 
+    case "debug-text-image":
+        try Diagnostics.dumpTextImage(
+            model: model, prompt: args.require("prompt"), image: args.url("image")!, to: args.url("out")!)
+
     case "debug-transformer":
         try Diagnostics.dumpTransformer(
             model: model, input: args.url("in")!,
@@ -166,16 +210,23 @@ do {
             latentHeight: args.int("height", 1024) / 16, latentWidth: args.int("width", 1024) / 16,
             loras: loraSpecs(), trace: args.string("trace") == "1", to: args.url("out")!)
 
+    case "debug-transformer-cond":
+        try Diagnostics.dumpTransformerCondition(
+            model: model, input: args.url("in")!,
+            sigmas: (args.string("sigmas") ?? "0.9").split(separator: ",").compactMap { Float($0) },
+            latentHeight: args.int("height", 1024) / 16, latentWidth: args.int("width", 1024) / 16,
+            loras: loraSpecs(), to: args.url("out")!)
+
     case "debug-conditioning":
         try Diagnostics.dumpConditioning(
             model: model, input: args.url("in")!, sigma: args.float("sigma", 1.0), loras: loraSpecs(),
             to: args.url("out")!)
 
     case "debug-denoise":
-        try Diagnostics.dumpDenoise(model: model, input: args.url("in")!, request: makeRequest(prompt: ""), to: args.url("out")!)
+        try Diagnostics.dumpDenoise(model: model, input: args.url("in")!, request: makeRequest(prompt: "").0, to: args.url("out")!)
 
     case "debug-euler":
-        try Diagnostics.dumpEuler(model: model, input: args.url("in")!, request: makeRequest(prompt: ""), to: args.url("out")!)
+        try Diagnostics.dumpEuler(model: model, input: args.url("in")!, request: makeRequest(prompt: "").0, to: args.url("out")!)
 
     case "debug-postprocess":
         try Diagnostics.dumpPostprocess(input: args.url("in")!, to: args.url("out")!)
@@ -191,6 +242,9 @@ do {
         try Diagnostics.dumpVAE(
             model: model, input: args.url("in")!, latentHeight: args.int("height", 1024) / 16,
             latentWidth: args.int("width", 1024) / 16, float32: args.string("dtype") == "f32", to: args.url("out")!)
+
+    case "debug-vae-encode":
+        try Diagnostics.dumpVAEEncode(model: model, input: args.url("in")!, to: args.url("out")!)
 
     case "bench-transformer":
         let probeBefore = Diagnostics.probeThermal()

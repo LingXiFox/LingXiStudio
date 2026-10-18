@@ -10,10 +10,17 @@ public enum MLXRuntime {
     public static let commandBufferOps = 100
     public static let commandBufferMB = 200
 
+    /// MLX runs float32 matmuls, convolutions and attention as TF32 on Apple GPUs by default (`MLX_ENABLE_TF32=1`),
+    /// about 1e-3 relative error per product. The stages this runtime keeps in fp32 on purpose (vision tower, VAE)
+    /// get true fp32 instead: measured against the reference, the vision tower goes from 1.4e-2 to 4.6e-5 rel-L2,
+    /// for about 0.5 s more per 1024² VAE decode. bf16 work (the DiT and text encoder matmuls) is unaffected.
+    public static let tf32 = false
+
     /// Sets the defaults above unless the environment already chooses a value. MLX reads them once when it creates
     /// the Metal device, so call this before any array is evaluated; later calls have no effect.
     public static func configure() {
         setenv("MLX_MAX_OPS_PER_BUFFER", String(commandBufferOps), 0)
         setenv("MLX_MAX_MB_PER_BUFFER", String(commandBufferMB), 0)
+        setenv("MLX_ENABLE_TF32", tf32 ? "1" : "0", 0)
     }
 }

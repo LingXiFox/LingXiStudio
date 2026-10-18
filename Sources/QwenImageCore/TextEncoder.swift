@@ -1,7 +1,7 @@
 import Foundation
 import MLX
 
-/// Text stack of the Qwen3-VL encoder used by Qwen-Image-2.1 (text-only path, no vision tower).
+/// Text stack of the Qwen3-VL encoder used by Qwen-Image-2.1. Condition images enter through `VisionInput`.
 ///
 /// Text-only inputs place the same position on all three interleaved M-RoPE axes, which makes M-RoPE identical
 /// to standard 1D RoPE, so the fast RoPE kernel is used directly.
@@ -80,20 +80,80 @@ final class QwenTextEncoder: ParameterContainer {
         return normalized.asType(x.dtype) * weight
     }
 
+    /// Image context for a prompt with condition images: the vision tower's outputs and where they go.
+    struct VisionInput {
+        /// Merged vision embeddings of all images, `[visual tokens, hidden]`, in placeholder order.
+        let embeds: MLXArray
+        /// Deepstack features added to the hidden states after the first `deepstack.count` layers.
+        let deepstack: [MLXArray]
+        /// Contiguous runs of `<|image_pad|>` positions in the token sequence, one per image.
+        let ranges: [Range<Int>]
+        /// M-RoPE positions `[3][L]` (temporal, height, width), as `Qwen3VLModel.get_rope_index` builds them.
+        let positions: [[Int32]]
+    }
+
+    /// Interleaved M-RoPE (`mrope_section = [24, 20, 20]`): frequency `i` reads the height position when
+    /// `i % 3 == 1`, the width position when `i % 3 == 2` (both below 60), and the temporal position otherwise.
+    private func mropeTables(_ positions: [[Int32]]) -> (MLXArray, MLXArray) {
+        let half = config.headDim / 2
+        let length = positions[0].count
+        var angles = [Float](repeating: 0, count: length * config.headDim)
+        for i in 0..<half {
+            let inv = 1 / powf(config.ropeTheta, Float(2 * i) / Float(config.headDim))
+            let axis = i < 60 && i % 3 == 1 ? 1 : i < 60 && i % 3 == 2 ? 2 : 0
+            for t in 0..<length {
+                let a = Float(positions[axis][t]) * inv
+                angles[t * config.headDim + i] = a
+                angles[t * config.headDim + half + i] = a
+            }
+        }
+        let a = MLXArray(angles).reshaped(1, 1, length, config.headDim)
+        return (cos(a), sin(a))
+    }
+
+    private func applyRope(_ x: MLXArray, _ tables: (MLXArray, MLXArray)) -> MLXArray {
+        let xf = x.asType(.float32)
+        let half = config.headDim / 2
+        let rotated = concatenated([-xf[.ellipsis, half...], xf[.ellipsis, ..<half]], axis: -1)
+        return (xf * tables.0 + rotated * tables.1).asType(x.dtype)
+    }
+
+    /// Replaces the rows of `ranges` in `hidden` ([1, L, d]) by consecutive rows of `values`, or adds them.
+    private func scatter(_ hidden: MLXArray, _ values: MLXArray, ranges: [Range<Int>], add: Bool) -> MLXArray {
+        var pieces: [MLXArray] = []
+        var cursor = 0
+        var offset = 0
+        for range in ranges {
+            if range.lowerBound > cursor { pieces.append(hidden[0..., cursor..<range.lowerBound]) }
+            var rows = values[offset..<(offset + range.count)].expandedDimensions(axis: 0).asType(hidden.dtype)
+            if add { rows = hidden[0..., range] + rows }
+            pieces.append(rows)
+            offset += range.count
+            cursor = range.upperBound
+        }
+        if cursor < hidden.dim(1) { pieces.append(hidden[0..., cursor...]) }
+        return concatenated(pieces, axis: 1)
+    }
+
     /// Returns the output of the last decoder layer, `[1, L, hidden]`.
     ///
     /// Qwen-Image-2.1 conditions on the last decoder layer output *before* the final RMSNorm
     /// (see the reference pipeline); `applyFinalNorm` exists only for A/B diagnostics.
-    func callAsFunction(_ ids: [Int], applyFinalNorm: Bool = false, evalEachLayer: Bool = true) -> MLXArray {
+    func callAsFunction(
+        _ ids: [Int], vision: VisionInput? = nil, applyFinalNorm: Bool = false, evalEachLayer: Bool = true
+    ) -> MLXArray {
         let length = ids.count
         // The residual stream is kept in fp32: activations reach the thousands, where bf16 accumulation
         // drifts measurably from an fp32 reference. Matmuls and attention still run in bf16.
         var hidden = embedTokens[MLXArray(ids.map { Int32($0) })].expandedDimensions(axis: 0)
         let dtype = embedTokens.dtype
         if config.residualFloat32 { hidden = hidden.asType(.float32) }
+        // After the cast, so fp32 vision embeddings enter the fp32 residual stream unrounded.
+        if let vision { hidden = scatter(hidden, vision.embeds, ranges: vision.ranges, add: false) }
         let c = config
         let scale = 1 / Float(c.headDim).squareRoot()
-        for layer in layers {
+        let tables = vision.map { mropeTables($0.positions) }
+        for (index, layer) in layers.enumerated() {
             let residual = hidden
             let x = rmsNorm(hidden, layer.inputNorm).asType(dtype)
             var q = layer.q(x).reshaped(1, length, c.heads, c.headDim)
@@ -101,8 +161,14 @@ final class QwenTextEncoder: ParameterContainer {
             let v = layer.v(x).reshaped(1, length, c.kvHeads, c.headDim).transposed(0, 2, 1, 3)
             q = rmsNorm(q, layer.qNorm).transposed(0, 2, 1, 3)
             k = rmsNorm(k, layer.kNorm).transposed(0, 2, 1, 3)
-            q = MLXFast.RoPE(q, dimensions: c.headDim, traditional: false, base: c.ropeTheta, scale: 1, offset: 0)
-            k = MLXFast.RoPE(k, dimensions: c.headDim, traditional: false, base: c.ropeTheta, scale: 1, offset: 0)
+            if let tables {
+                q = applyRope(q, tables)
+                k = applyRope(k, tables)
+            } else {
+                // Text-only: all three M-RoPE axes carry the same position, which is plain 1D RoPE.
+                q = MLXFast.RoPE(q, dimensions: c.headDim, traditional: false, base: c.ropeTheta, scale: 1, offset: 0)
+                k = MLXFast.RoPE(k, dimensions: c.headDim, traditional: false, base: c.ropeTheta, scale: 1, offset: 0)
+            }
             let attention = MLXFast.scaledDotProductAttention(
                 queries: q, keys: k, values: v, scale: scale, mask: .causal
             ).transposed(0, 2, 1, 3).reshaped(1, length, c.heads * c.headDim)
@@ -110,6 +176,9 @@ final class QwenTextEncoder: ParameterContainer {
 
             let y = rmsNorm(hidden, layer.postNorm).asType(dtype)
             hidden = hidden + layer.down(silu(layer.gate(y)) * layer.up(y))
+            if let vision, index < vision.deepstack.count {
+                hidden = scatter(hidden, vision.deepstack[index], ranges: vision.ranges, add: true)
+            }
             if evalEachLayer { eval(hidden) }
         }
         return (applyFinalNorm ? rmsNorm(hidden, finalNorm) : hidden).asType(dtype)
