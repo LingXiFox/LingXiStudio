@@ -29,8 +29,8 @@ final class HardwareLoRAStackTests: XCTestCase {
             let request = GenerationRequest(prompt: "A small blue ceramic fox on a wooden table", width: 256, height: 256,
                 steps: 6, seed: 42, scheduler: .viggleTurbo, loras: loras)
             var controlPixels: [UInt8]?
-            for cacheMB in ["0", "512"] {
-                setenv("LINGXI_DIT_CACHE", cacheMB == "0" ? "0" : "1", 1)
+            for cacheMB in ["unbounded", "128"] {
+                setenv("LINGXI_DIT_CACHE", cacheMB == "unbounded" ? "0" : "1", 1)
                 let gate = Process()
                 gate.executableURL = URL(fileURLWithPath: "/bin/zsh")
                 gate.arguments = [root.appending(path: "Scripts/thermal-gate.sh").path]
@@ -46,14 +46,14 @@ final class HardwareLoRAStackTests: XCTestCase {
                     }
                 }
                 XCTAssertEqual(Memory.cacheLimit, oldLimit)
-                if cacheMB == "0" {
+                if cacheMB == "unbounded" {
                     if let previousPixels { XCTAssertNotEqual(image.rgba, previousPixels, "Each added real adapter must affect the output") }
                     previousPixels = image.rgba
                     controlPixels = image.rgba
                 } else {
                     XCTAssertEqual(image.rgba, controlPixels, "Buffer cache policy must not change any pixel")
                 }
-                XCTAssertEqual(image.conditioningCacheHit, count > 1 || cacheMB == "512", "LoRA changes do not alter text conditioning")
+                XCTAssertEqual(image.conditioningCacheHit, count > 1 || cacheMB == "128", "LoRA changes do not alter text conditioning")
                 XCTAssertEqual(image.stepSeconds.count, 6)
                 try ImageWriter.write(image, model: model.root.lastPathComponent,
                     to: work.appending(path: "stack-\(count)-cache\(cacheMB).png"))

@@ -18,7 +18,7 @@ final class HardwareConditioningTests: XCTestCase {
         }
         MLXRuntime.configure()
         let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-        let work = root.appending(path: ".tmp/conditioning-performance-20261018")
+        let work = root.appending(path: ".tmp/conditioning-performance-20261018").appending(path: UUID().uuidString)
         try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
         let model = ModelDirectory(root: FileManager.default.homeDirectoryForCurrentUser.appending(path: "Models/Qwen-Image-2.1-BF16"))
         _ = try model.validate()
