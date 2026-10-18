@@ -147,6 +147,10 @@ struct GalleryWindow: View {
                 model.selection = item.url
             }
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityValue(isSelected ? "已选择" : "未选择")
+        .accessibilityAction { selected = [item.url]; model.selection = item.url }
         .contextMenu { ImageActionsMenu(item: item) }
     }
 
