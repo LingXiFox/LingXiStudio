@@ -16,6 +16,7 @@ public enum ImageWriterError: Error, CustomStringConvertible {
 public struct GenerationMetadata: Codable, Sendable {
     public var app = "LingXiStudio"
     public var model: String
+    public var modelPath: String? = nil
     public var precision = "bf16"
     public var mode = "text-to-image"
     public var request: GenerationRequest
@@ -32,16 +33,23 @@ extension GenerationMetadata {
     public static func read(sidecarOf png: URL) throws -> GenerationMetadata {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        let data = try Data(contentsOf: png.deletingPathExtension().appendingPathExtension("json"))
-        return try decoder.decode(GenerationMetadata.self, from: data)
+        let sidecar = png.deletingPathExtension().appendingPathExtension("json")
+        if let data = try? Data(contentsOf: sidecar),
+            let metadata = try? decoder.decode(GenerationMetadata.self, from: data) { return metadata }
+        guard let source = CGImageSourceCreateWithURL(png as CFURL, nil),
+            let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+            let info = properties[kCGImagePropertyPNGDictionary] as? [CFString: Any],
+            let description = info[kCGImagePropertyPNGDescription] as? String
+        else { throw ImageWriterError.encodeFailed("Missing generation record: \(png.path)") }
+        return try decoder.decode(GenerationMetadata.self, from: Data(description.utf8))
     }
 }
 
 public enum ImageWriter {
     /// Writes a lossless RGBA PNG plus `<name>.json` with the full generation record.
-    public static func write(_ image: GeneratedImage, model: String, to url: URL) throws {
+    public static func write(_ image: GeneratedImage, model: String, modelPath: String? = nil, to url: URL) throws {
         let metadata = GenerationMetadata(
-            model: model, mode: image.request.mode.rawValue, request: image.request, timings: image.timings, stepSeconds: image.stepSeconds, totalSeconds: image.totalSeconds,
+            model: model, modelPath: modelPath, mode: image.request.mode.rawValue, request: image.request, timings: image.timings, stepSeconds: image.stepSeconds, totalSeconds: image.totalSeconds,
             peakMemoryBytes: image.peakMemoryBytes, createdAt: Date(), conditioningCacheHit: image.conditioningCacheHit)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]

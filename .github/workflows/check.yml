@@ -1,0 +1,42 @@
+name: Build and common regressions
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  macos:
+    runs-on: xcode-27
+    timeout-minutes: 35
+    env:
+      LINGXI_TEST_DEVICE: cpu
+      BUILD_JOBS: 2
+    steps:
+      - uses: actions/checkout@v7
+      - name: Toolchain
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+      - name: Release build
+        run: swift build -c release --jobs 2
+      - name: Common XCTest (no large model download)
+        run: |
+          mkdir -p .tmp/ci
+          swift test list -c release --jobs 2 > .tmp/ci/tests.txt
+          swift test -c release --jobs 2 --parallel --num-workers 1 --skip 'Hardware|TransformerLifetimeTests' --xunit-output .tmp/ci/tests.xml
+          python3 Scripts/check-tests.py .tmp/ci/tests.txt .tmp/ci/tests.xml --cpu
+      - name: Build and verify app bundle
+        run: |
+          Scripts/make-app.sh
+          python3 Scripts/verify-app.py dist/LingXiStudio.app
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: common-regression-evidence
+          path: .tmp/ci/
+          if-no-files-found: error

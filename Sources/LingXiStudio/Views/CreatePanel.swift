@@ -21,7 +21,8 @@ struct CreatePanel: View {
                     .padding(.top, Metrics.l)
                     .padding(.bottom, Metrics.l)
                     // The prompt grows into whatever height the other sections leave free.
-                    .frame(maxWidth: .infinity, minHeight: geo.size.height, alignment: .top)
+                    .frame(width: geo.size.width)
+                    .frame(minHeight: geo.size.height, alignment: .top)
                 }
                 .scrollIndicators(.automatic)
             }

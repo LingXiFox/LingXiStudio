@@ -26,7 +26,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "LingXiStudio",
-            dependencies: ["QwenImageCore"]
+            dependencies: ["QwenImageCore", .product(name: "MLX", package: "mlx-swift")]
         ),
         .testTarget(
             name: "WorkbenchTests",

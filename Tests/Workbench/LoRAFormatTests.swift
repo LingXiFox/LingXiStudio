@@ -3,7 +3,7 @@ import MLX
 import XCTest
 @testable import QwenImageCore
 
-final class LoRAFormatTests: XCTestCase {
+final class LoRAFormatTests: MLXTestCase {
     private func file(_ arrays: [String: MLXArray]) throws -> URL {
         let url = URL(fileURLWithPath: "/tmp", isDirectory: true).appending(path: "lora-\(UUID().uuidString).safetensors")
         try save(arrays: arrays, url: url)

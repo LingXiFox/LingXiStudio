@@ -3,7 +3,7 @@ import MLX
 import XCTest
 @testable import QwenImageCore
 
-final class TextConditionCacheTests: XCTestCase {
+final class TextConditionCacheTests: MLXTestCase {
     func testBF16NoncontiguousRoundTripPreservesBytesDtypeAndRanges() throws {
         MLXRuntime.configure()
         let array = MLXArray((0..<24).map { Float($0) / 7 }).reshaped(4, 6).asType(.bfloat16).T

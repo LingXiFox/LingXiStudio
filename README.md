@@ -6,6 +6,9 @@
 本项目处于开发阶段，提供本地构建、临时签名的 macOS App，尚未发布经过公证的安装包。项目代码采用 [MIT](LICENSE)；
 **模型和 LoRA 使用各自的许可证，MIT 不授予模型商用权利**，详见[许可证与致谢](#许可证与致谢)。
 
+本轮 Runtime v1 候选冻结在 [`runtime-v1-rc1`](https://github.com/LingXiFox/LingXiStudio/tree/runtime-v1-rc1)（`4e1426c`）。
+新版完善原生工作流、记录追溯和 CI；详见 [Runtime 冻结](docs/runtime-v1-candidate.md)、[GUI 与真实创作验收](docs/workbench-v1-acceptance.md)、[交付准备](docs/release-readiness.md)。候选与测试通过不代表所有场景均已验证。
+
 ## 环境要求
 
 - Apple Silicon Mac；当前实际验收设备为 M5 MacBook Air、32 GB 统一内存。
@@ -60,6 +63,7 @@ open dist/LingXiStudio.app
 - 暖奶白/暖炭黑主题、点击空白取消输入焦点、自定义键盘焦点指示、提示词与生成预设。
 
 LoRA 支持 `transformer.`、`diffusion_model.` 及 packed `gate_up` 映射，保留原始因子 dtype 和 per-layer alpha；动态叠加后返回基础投影的 BF16 dtype，基础权重不烘焙。DiT 阶段将空闲缓冲缓存预算限制到 128 MiB，退出时恢复旧值；不裁剪活跃张量或参考图 Token。
+App 的生成任务另将 MLX 内存调度水位设为不高于物理内存的 5/8（32 GiB 机器为 20 GiB），让在途分配过快时等待已提交计算；完成、失败或取消后恢复原水位。这是软调度阈值，不是活跃张量硬上限，也不承诺所有后台负载下零 Swap。相同四 LoRA 参考图的隔离验证逐像素一致；原 CLI 默认策略保持不变。
 
 文本条件采用全精度逐层加载，并保留最近一组条件的无损 CPU Embedding 缓存（最多 128 MiB）。同一模型、提示词、参考图和文本计算配置下，只修改 Seed 会复用条件，跳过视觉/文本编码器。缓存不跨 App 重启；超限时重新计算。
 缓存校验准备后的参考图实际像素与顺序、提示词、CFG 分支、模型文件身份及配置内容，不依赖输入路径或历史哈希。模型权重被替换或修改时失效；生成期间模型变化会报错。详见[加载、缓存与性能实测](docs/conditioning-performance.md)。
@@ -95,7 +99,7 @@ mkdir -p .tmp
 swift test -c release --parallel --num-workers 2 --skip Hardware --xunit-output .tmp/tests.xml
 ```
 
-常规 XCTest 有 20 项，覆盖蒙版、输出元数据、点击空白、加载/层间取消、逐层编码字节对齐及缓存失效。另有文本/参考条件缓存 2 项、多 LoRA 1 项及完整工作负载连续稳定性 1 项显式启用的真实模型测试；默认跳过不能代替实际通过。条件/像素回归串行等待温控门限，连续稳定性只在开始前校准，运行内吞吐下降只记录，不暂停或中止。多 LoRA 用例在同一进程验证八次完整生成的像素和资源释放；启用命令见[多 LoRA 实测](docs/multi-lora-reference-performance.md)及[条件缓存实测](docs/conditioning-performance.md)。
+常规 XCTest 现有 27 项，本机 GPU 路径通过；标准 CI 使用 CPU 执行其中 26 项，明确不覆盖 Metal 编译图生命周期用例。测试覆盖蒙版、输出元数据、点击空白、加载/层间取消、逐层编码字节对齐及缓存失效。另有文本/参考条件缓存 2 项、多 LoRA 1 项及完整工作负载连续稳定性 1 项显式启用的真实模型测试，另有 1 项全尺寸内存调度/像素一致性隔离用例；默认跳过不能代替实际通过。条件/像素回归串行等待温控门限，连续稳定性只在开始前校准，运行内吞吐下降只记录，不暂停或中止。多 LoRA 用例在同一进程验证八次完整生成的像素和资源释放；启用命令见[多 LoRA 实测](docs/multi-lora-reference-performance.md)及[条件缓存实测](docs/conditioning-performance.md)。
 [分阶段数值对齐脚本](Tests/Parity/run.sh) 是开发用工具，需要单独准备 Python/PyTorch 参考环境；正常推理不需要这些依赖。
 
 | 证据 | 已验证范围 |

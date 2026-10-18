@@ -84,6 +84,8 @@ struct GalleryWindow: View {
             }
             .toolbar {
                 ToolbarItemGroup {
+                    Button("刷新", systemImage: "arrow.clockwise") { model.reloadGallery() }
+                        .help("重新扫描图库文件夹")
                     Button("全选") { selected = Set(items.map(\.url)) }
                     Button("取消选择") { selected.removeAll() }.disabled(selected.isEmpty)
                     Button("比较", systemImage: "square.split.2x1") {

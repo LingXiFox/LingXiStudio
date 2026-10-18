@@ -32,6 +32,9 @@ struct WorkbenchView: View {
         }
         .navigationTitle("")
         .brandWindow()
+        .alert("无法完成操作", isPresented: Binding(get: { model.actionError != nil }, set: { if !$0 { model.actionError = nil } })) {
+            Button("好") { model.actionError = nil }
+        } message: { Text(model.actionError ?? "") }
     }
 }
 

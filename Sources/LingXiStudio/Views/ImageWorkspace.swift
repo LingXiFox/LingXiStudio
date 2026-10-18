@@ -54,7 +54,7 @@ struct PreviewPane: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if let item = model.selectedArtwork {
+            if let item = model.selectedArtwork, !model.isRunning {
                 CanvasToolbar(item: item, zoom: $zoom)
             }
             ZStack {

@@ -17,7 +17,7 @@ struct ParameterStrip: View {
             Grid(alignment: .leading, horizontalSpacing: Metrics.m, verticalSpacing: Metrics.m) {
                 GridRow {
                     ParamField(label: "比例") { AspectPicker() }
-                    ParamField(label: "尺寸", trailing: String(format: "%.2f MP", Double(p.width * p.height) / 1e6)) { sizeField }
+                    ParamField(label: "尺寸", trailing: String(format: "%.2f MP", Double(p.width) * Double(p.height) / 1e6)) { sizeField }
                         .gridCellColumns(2)
                     ParamField(label: "调度", plain: true) {
                         BrandSegmented(

@@ -184,7 +184,7 @@ struct LoRARow: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .disabled(!item.isUsable)
+            .disabled(!item.canToggle)
             .help(item.enabled ? "停用" : "启用")
             .accessibilityLabel("\(item.enabled ? "停用" : "启用") LoRA：\(item.name)")
             VStack(alignment: .leading, spacing: 6) {
@@ -196,6 +196,8 @@ struct LoRARow: View {
                 if let problem = item.problems.first {
                     Text(problem).font(.caption2).foregroundStyle(Brand.danger).lineLimit(1).help(item.problems.joined(separator: "\n"))
                 }
+                Text("rank \(item.rank) · \(item.precision) · \(item.targetCount) 层")
+                    .font(TypeScale.caption).foregroundStyle(Brand.textSecondary).lineLimit(1)
                 HStack(spacing: 6) {
                     Tag(text: item.purpose.label, tint: item.purpose == .acceleration ? Brand.foxText : Brand.textSecondary)
                     if item.purpose == .acceleration && item.enabled && model.parameters.preset != .turbo {
@@ -254,7 +256,7 @@ struct LoRARow: View {
     }
 
     private var info: String {
-        var parts = ["rank \(item.rank)", "\(item.targetCount) 层", Format.bytes(item.fileBytes)]
+        var parts = ["rank \(item.rank)", item.precision, "\(item.targetCount) 层", Format.bytes(item.fileBytes)]
         if !item.coverage.isEmpty { parts.append(item.coverage.joined(separator: "/")) }
         return parts.joined(separator: " · ")
     }
@@ -508,7 +510,7 @@ struct TaskRow: View {
     private var statusIcon: some View {
         switch task.status {
         case .waiting: Image(systemName: "clock").foregroundStyle(Brand.textTertiary)
-        case .running: ProgressView().controlSize(.mini)
+        case .running: ProgressRing(fraction: model.live?.taskID == task.id ? model.live!.overallFraction : 0).frame(width: 12, height: 12)
         case .done: Image(systemName: "checkmark.circle.fill").foregroundStyle(Brand.success)
         case .failed: Image(systemName: "xmark.octagon.fill").foregroundStyle(Brand.danger)
         case .cancelled: Image(systemName: "minus.circle").foregroundStyle(Brand.textTertiary)

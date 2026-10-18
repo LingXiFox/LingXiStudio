@@ -283,10 +283,12 @@ struct LoRALibraryWindow: View {
                     ForEach($model.loras) { $item in
                         if matches(item) {
                             HStack(spacing: 10) {
+                                Toggle("启用", isOn: $item.enabled).labelsHidden().toggleStyle(.checkbox)
+                                    .disabled(!item.canToggle).accessibilityLabel("启用 LoRA：\(item.name)")
                                 IconTile(symbol: item.purpose.symbol, size: 22)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(item.name).font(.callout.weight(.medium))
-                                    Text("rank \(item.rank) · \(item.targetCount) 层 · \(Format.bytes(item.fileBytes)) · \(item.source)")
+                                    Text("rank \(item.rank) · \(item.precision) · \(item.targetCount) 层 · \(Format.bytes(item.fileBytes)) · \(item.source)")
                                         .font(.caption).foregroundStyle(.secondary)
                                     if !item.problems.isEmpty { Text(item.problems.joined(separator: "；")).font(.caption).foregroundStyle(.red) }
                                 }
@@ -556,7 +558,7 @@ enum RuntimeOverrides {
 
     /// Exports the stored overrides unless the environment already sets them; `MLXRuntime.configure()` fills the rest.
     static func apply() {
-        let defaults = UserDefaults.standard
+        let defaults = AppPaths.defaults
         if let ops = defaults.object(forKey: opsKey) as? Int { setenv("MLX_MAX_OPS_PER_BUFFER", String(ops), 0) }
         if let mb = defaults.object(forKey: mbKey) as? Int { setenv("MLX_MAX_MB_PER_BUFFER", String(mb), 0) }
     }
@@ -564,7 +566,7 @@ enum RuntimeOverrides {
     static func current(_ name: String) -> String { getenv(name).map { String(cString: $0) } ?? "MLX 默认" }
 
     static var pendingRestart: Bool {
-        let defaults = UserDefaults.standard
+        let defaults = AppPaths.defaults
         let ops = defaults.object(forKey: opsKey) as? Int ?? MLXRuntime.commandBufferOps
         let mb = defaults.object(forKey: mbKey) as? Int ?? MLXRuntime.commandBufferMB
         return current("MLX_MAX_OPS_PER_BUFFER") != String(ops) || current("MLX_MAX_MB_PER_BUFFER") != String(mb)

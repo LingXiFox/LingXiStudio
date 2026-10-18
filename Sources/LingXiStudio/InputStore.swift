@@ -61,6 +61,20 @@ enum InputStore {
         return InputImage(storedPath: target.path, sourcePath: source, sha256: storedHash, width: cg.width, height: cg.height)
     }
 
+    /// Resolve a moved output folder without accepting changed input bytes.
+    static func restore(_ record: InputImageRecord, nextTo artwork: URL) throws -> InputImage {
+        let original = URL(fileURLWithPath: record.path)
+        let adjacent = artwork.deletingLastPathComponent().appending(path: "inputs/\(record.sha256).png")
+        for url in [original, adjacent] {
+            guard let data = try? Data(contentsOf: url),
+                SHA256.hash(data: data).map({ String(format: "%02x", $0) }).joined() == record.sha256
+            else { continue }
+            return InputImage(storedPath: url.path, sourcePath: record.source, sha256: record.sha256,
+                width: record.width, height: record.height)
+        }
+        throw ConditioningError.unreadableImage(record.path)
+    }
+
     /// Reads image files or image data from a pasteboard.
     @MainActor
     static func fromPasteboard(_ pasteboard: NSPasteboard = .general) -> [InputImage] {
@@ -77,8 +91,25 @@ enum InputStore {
 }
 
 enum AppPaths {
+    /// An opt-in profile keeps development acceptance away from the user's library and preferences.
+    static var profile: URL? {
+        guard let path = ProcessInfo.processInfo.environment["LINGXI_PROFILE_DIRECTORY"] else { return nil }
+        precondition(path.hasPrefix("/"), "LINGXI_PROFILE_DIRECTORY must be an absolute path")
+        return URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
+    }
+
+    static var preferencesDomain: String? {
+        profile.map { "com.lingxifox.LingXiStudio.profile." + SHA256.hash(data: Data($0.path.utf8)).map { String(format: "%02x", $0) }.joined() }
+    }
+
+    static var defaults: UserDefaults {
+        guard let domain = preferencesDomain else { return .standard }
+        guard let defaults = UserDefaults(suiteName: domain) else { preconditionFailure("Could not open isolated preferences") }
+        return defaults
+    }
+
     static var support: URL {
-        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let dir = profile ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appending(path: "LingXiStudio")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
@@ -103,8 +134,8 @@ enum AppLog {
 
     static func write(_ message: String) {
         let line = "\(ISO8601DateFormatter().string(from: Date())) \(message)\n"
+        let url = todayFile
         queue.async {
-            let url = todayFile
             if let handle = try? FileHandle(forWritingTo: url) {
                 handle.seekToEndOfFile()
                 handle.write(Data(line.utf8))

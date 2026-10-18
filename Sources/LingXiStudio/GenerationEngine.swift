@@ -1,4 +1,5 @@
 import Foundation
+import MLX
 import QwenImageCore
 
 /// Runs generation jobs one at a time on a dedicated thread.
@@ -74,7 +75,16 @@ final class GenerationEngine: @unchecked Sendable {
         }
     }
 
+    /// A soft scheduling watermark, not a cap on tensors or precision. Leave headroom for the desktop.
+    static func schedulingMemoryLimit(previous: Int, physical: UInt64) -> Int {
+        min(previous, Int(physical / 8 * 5))
+    }
+
     private func run(_ job: Job, _ events: @escaping @Sendable (Event) -> Void) throws {
+        let previousMemoryLimit = Memory.memoryLimit
+        Memory.memoryLimit = Self.schedulingMemoryLimit(previous: previousMemoryLimit, physical: ProcessInfo.processInfo.physicalMemory)
+        defer { Memory.memoryLimit = previousMemoryLimit }
+        AppLog.write("generation scheduling memory limit=\(Memory.memoryLimit) previous=\(previousMemoryLimit)")
         // Keep user-requested inference out of App Nap, including when the window is covered.
         let activity = ProcessInfo.processInfo.beginActivity(options: .userInitiated, reason: "Generate images")
         defer { ProcessInfo.processInfo.endActivity(activity) }
@@ -118,7 +128,7 @@ final class GenerationEngine: @unchecked Sendable {
                     request, inputs: inputs, progress: { events(.progress(imageIndex: index, $0)) },
                     isCancelled: { self.isCancelled })
                 let url = Self.outputURL(in: job.outputDirectory, seed: seed)
-                try ImageWriter.write(image, model: job.modelRoot.lastPathComponent, to: url)
+                try ImageWriter.write(image, model: job.modelRoot.lastPathComponent, modelPath: job.modelRoot.path, to: url)
                 events(.saved(imageIndex: index, url: url, seconds: image.totalSeconds, stepSeconds: image.stepSeconds))
             }
         }

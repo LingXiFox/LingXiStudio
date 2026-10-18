@@ -11,11 +11,11 @@
 - 保留参考图 Token、分辨率和完整调度，不新增中间去噪预览。
 - Command Buffer 默认 100 ops / 200 MB；吞吐探针只判定测速有效性，不作为生成中止条件。
 
-本阶段除非出现明确泄漏、严重卡顿、计算错误或质量回退，不修改 `Sources/QwenImageCore/`。后续界面修改通过已有 GenerationEngine 与 Runtime 回调衔接，不重建推理路径。
+本阶段除非出现明确泄漏、严重卡顿、计算错误或质量回退，不修改核心推理计算。Phase B 仅扩展 `ImageWriter.swift` 的记录 I/O：可选模型绝对路径、PNG 内嵌记录读取回退；兼容旧 JSON，不改变像素编码或推理。其余 18 个核心文件继续与候选逐字节相同。后续界面修改通过已有 GenerationEngine 与 Runtime 回调衔接，不重建推理路径。
 
 ## Phase A 复验计划与证据
 
-当前核心源文件逐字节与候选提交相同，文件 SHA-256 清单保留于 `.tmp/runtime-v1-20261018/frozen-core.json`。原始记录追加新目录，不覆盖旧证据。
+Phase A 执行时全部 19 个核心源文件逐字节与候选提交相同，文件 SHA-256 清单保留于 `.tmp/runtime-v1-20261018/frozen-core.json`。原始记录追加新目录，不覆盖旧证据。
 
 1. 常规 XCTest：原基线 20 项已通过，实际 xUnit testcase 数已核对。
 2. 原有四项真实模型 XCTest：分别验证文本/参考条件缓存、四 LoRA 叠加与释放、完整参考图连续生成。
@@ -42,3 +42,13 @@
 - 吞吐探针还受缓存预算、资源驻留及其他 GPU 工作影响，不等价于 GPU MHz 传感器。
 - 本阶段不以 5–6 秒/步要求复杂负载；该数字只用于纯文生图单 Turbo 的基准目标。
 - 既有跨框架数值对齐证据保留；未改变核心计算的前提下，不重复下载模型或安装新的 Python 参考环境。
+
+## 实际 GUI 复测后的资源调度补充
+
+Phase A 原有结果保持原样。后续 GUI 四 LoRA 参考图出现卡顿与新增 Swap，不能将 Phase A 通过推广为任意桌面负载均流畅。详见 [GUI 验收](workbench-v1-acceptance.md)。
+
+在不修改上述 18 个核心计算文件、128 MiB 闲置缓存、100 ops / 200 MB、精度和 Token 的前提下，GenerationEngine 在任务作用域使用 MLX 已有 `Memory.memoryLimit`：不高于物理内存 5/8，32 GiB 为 20 GiB，且不抬高用户原本更低的限制；成功、失败、取消均 defer 恢复。MLX 在超水位且存在在途任务时提交并等待计算，不裁剪活跃张量，所以该值不是硬内存上限。
+
+隔离真模型实验 `HardwareMemoryBudgetTests` 一项通过，全部输出像素与四 LoRA 质量基线一致，结束 active=0；该轮新增 Swap-out=0，去噪 GPU 99–100%、整机 CPU 均值约 11.2%，主人确认未感到卡顿。压力曾短暂 warning，不能写成全程无压力。这项资源调度补充针对真实发现的桌面卡顿，不是为了提高吞吐而改变算子或精度；CLI 默认路径不额外改变内存水位。
+
+证据：`.tmp/runtime-v1-20261018/soft-budget-test.xml`、`soft-budget/03248B64-D88E-46E5-ABEA-4CD3BBEFD46E/`。后续实际 GUI 验收另行记录；隔离用例不能冒充最终 App 已验收。

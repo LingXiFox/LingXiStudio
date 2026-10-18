@@ -69,6 +69,7 @@ final class AppModel {
     var live: LiveProgress?
     private(set) var cancellationRequested = false
     var canvasNotice: CanvasNotice?
+    var actionError: String?
     var artworks: [Artwork] = []
     var favorites: Set<String> = [] { didSet { save() } }
     var selection: URL?
@@ -88,12 +89,12 @@ final class AppModel {
     private let engine = GenerationEngine()
     private var runningTaskID: UUID?
     private var metricsTimer: Timer?
-    private let defaults = UserDefaults.standard
+    private let defaults = AppPaths.defaults
     private var loading = true
 
     init() {
         let home = FileManager.default.homeDirectoryForCurrentUser
-        outputDirectory = home.appending(path: "Pictures/LingXiStudio")
+        outputDirectory = AppPaths.profile?.appending(path: "outputs") ?? home.appending(path: "Pictures/LingXiStudio")
         loraFolder = home.appending(path: "Models/Qwen-Image-2.1-LoRA")
         if let path = defaults.string(forKey: "outputDirectory") { outputDirectory = URL(fileURLWithPath: path) }
         if let path = defaults.string(forKey: "loraFolder") { loraFolder = URL(fileURLWithPath: path) }
@@ -101,7 +102,7 @@ final class AppModel {
             modelRoot = URL(fileURLWithPath: path)
         } else {
             let fallback = home.appending(path: "Models/Qwen-Image-2.1-BF16")
-            if FileManager.default.fileExists(atPath: fallback.path) { modelRoot = fallback }
+            if AppPaths.profile == nil && FileManager.default.fileExists(atPath: fallback.path) { modelRoot = fallback }
         }
         func decode<T: Decodable>(_ type: T.Type, _ key: String) -> T? {
             defaults.data(forKey: key).flatMap { try? JSONDecoder().decode(type, from: $0) }
@@ -231,13 +232,20 @@ final class AppModel {
     }
 
     func importConditions(urls: [URL]) {
-        addConditions(urls.compactMap { try? InputStore.importFile($0) })
+        var images: [InputImage] = []
+        for url in urls { if let image = importImage(url) { images.append(image) } }
+        addConditions(images)
+    }
+
+    private func importImage(_ url: URL) -> InputImage? {
+        do { return try InputStore.importFile(url) }
+        catch { actionError = "无法导入「\(url.lastPathComponent)」：\(error)"; return nil }
     }
 
     func pasteConditions() { addConditions(InputStore.fromPasteboard()) }
 
     func setInitial(url: URL) {
-        if let image = try? InputStore.importFile(url) { initialImage = image }
+        if let image = importImage(url) { initialImage = image }
     }
 
     func makeMain(_ id: UUID) {
@@ -249,7 +257,7 @@ final class AppModel {
     func removeCondition(_ id: UUID) { conditions.removeAll { $0.id == id } }
 
     func replaceCondition(_ id: UUID, with url: URL) {
-        guard let i = conditions.firstIndex(where: { $0.id == id }), let image = try? InputStore.importFile(url) else { return }
+        guard let i = conditions.firstIndex(where: { $0.id == id }), let image = importImage(url) else { return }
         conditions[i] = image
     }
 
@@ -314,6 +322,7 @@ final class AppModel {
     var estimatedPeakBytes: Int64 {
         let gb: Double = 1_073_741_824
         let conditionsUsed = mode.needsConditions ? conditions.count : 0
+        guard (1...16384).contains(parameters.width), (1...16384).contains(parameters.height) else { return Int64.max }
         let pixelsScale = Double(parameters.width * parameters.height) / Double(1024 * 1024)
         var estimate = 17.5 + 1.8 * pixelsScale
         estimate += 2.2 * Double(conditionsUsed) * (parameters.usesTrueCFG ? 2 : 1)
@@ -331,6 +340,8 @@ final class AppModel {
         if parameters.text(for: mode).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             issues.append(mode.usesInstruction ? "编辑指令为空" : "提示词为空")
         }
+        if parameters.width <= 0 || parameters.height <= 0 { issues.append("宽高必须大于零") }
+        if !parameters.guidance.isFinite || !loras.allSatisfy({ $0.scale.isFinite }) { issues.append("Guidance 和 LoRA 强度必须是有限数值") }
         if parameters.width % 32 != 0 || parameters.height % 32 != 0 { issues.append("宽高必须是 32 的倍数") }
         if parameters.preset == .turbo && !turboAvailable { issues.append("Turbo 需要启用一个加速 LoRA") }
         for item in loras where item.enabled && !item.isUsable { issues.append("LoRA「\(item.name)」不可用") }
@@ -352,7 +363,7 @@ final class AppModel {
     /// Non-blocking risks shown next to the generate button.
     var warnings: [String] {
         var notes: [String] = []
-        let pixels = parameters.width * parameters.height
+        let pixels = Double(parameters.width) * Double(parameters.height)
         if pixels > 1536 * 1536 { notes.append("分辨率超过 1536²，可能出现 Swap") }
         if parameters.usesTrueCFG { notes.append("真 CFG 每步计算两次，耗时约翻倍") }
         if parameters.guidance > 1 && !parameters.usesTrueCFG { notes.append("Guidance > 1 但负面提示词为空，引导不会生效") }
@@ -360,13 +371,18 @@ final class AppModel {
         if estimatedPeakBytes > Int64(Double(physicalMemory) * 0.7) && estimatedPeakBytes <= memoryBudget {
             notes.append("预计峰值内存 \(Format.bytes(estimatedPeakBytes))，接近本机上限")
         }
+        let photographic = activeLoRAs.filter { item in
+            let name = item.name.lowercased()
+            return name.contains("canon") || name.contains("samsung")
+        }
+        if photographic.count > 1 { notes.append("多个摄影风格 LoRA 可能互相影响，请自行选择强度与顺序") }
         if metrics.pressure == .critical { notes.append("系统内存压力严重") }
         if mode == .imageToImage && parameters.imageStrength >= 0.99 { notes.append("强度 1.0 等同于从纯噪声生成（不保留初始图）") }
         return notes
     }
 
     private func rateKey(for p: GenerationParameters, loras: [LoRASpec], conditions: Int) -> String {
-        "\(p.width)x\(p.height)-lora\(loras.isEmpty ? 0 : 1)-cfg\(p.usesTrueCFG ? 1 : 0)-cond\(conditions)"
+        "\(p.width)x\(p.height)-lora\(loras.filter { $0.enabled && $0.scale != 0 }.count)-cfg\(p.usesTrueCFG ? 1 : 0)-cond\(conditions)"
     }
 
     var estimatedSecondsPerStep: Double? {
@@ -391,7 +407,7 @@ final class AppModel {
         let task = TaskRecord(
             mode: mode, modelName: root.lastPathComponent, modelPath: root.path, parameters: params,
             loras: activeLoRAs.map(\.spec), conditions: mode.needsConditions ? conditions : [],
-            initial: mode.needsInitial ? initialImage : nil, mask: maskInput)
+            initial: mode.needsInitial ? initialImage : nil, mask: maskInput, outputPath: outputDirectory.path)
         tasks.insert(task, at: 0)
         AppLog.write("queued \(task.id) \(mode.rawValue) \(params.width)x\(params.height) \(params.steps) steps")
         startNextIfIdle()
@@ -401,7 +417,7 @@ final class AppModel {
         guard let old = tasks.first(where: { $0.id == id }) else { return }
         let task = TaskRecord(
             mode: old.mode, modelName: old.modelName, modelPath: old.modelPath, parameters: old.parameters,
-            loras: old.loras, conditions: old.conditions, initial: old.initial, mask: old.mask)
+            loras: old.loras, conditions: old.conditions, initial: old.initial, mask: old.mask, outputPath: old.outputPath)
         tasks.insert(task, at: 0)
         startNextIfIdle()
     }
@@ -451,13 +467,13 @@ final class AppModel {
         if let initial = task.initial { records.append(initial.record(role: .initial)) }
         if let mask = task.mask { records.append(mask.record(role: .mask)) }
         let request = GenerationRequest(
-            prompt: p.text(for: task.mode), negativePrompt: p.usesTrueCFG ? p.negativePrompt : nil, width: p.width,
+            prompt: p.text(for: task.mode), negativePrompt: p.negativePrompt, width: p.width,
             height: p.height, steps: p.steps, trueCFGScale: p.guidance, seed: seeds[0], scheduler: p.preset.schedule,
             loras: task.loras, mode: task.mode, inputs: records, strength: p.strength(for: task.mode),
             maskFeather: p.maskFeather, maskInvert: p.maskInvert, keepUnmaskedPixels: p.keepUnmasked)
         let job = GenerationEngine.Job(
             taskID: task.id, modelRoot: URL(fileURLWithPath: task.modelPath), request: request, seeds: seeds,
-            outputDirectory: outputDirectory)
+            outputDirectory: task.outputPath.map { URL(fileURLWithPath: $0) } ?? outputDirectory)
         let id = task.id
         let key = rateKey(for: p, loras: task.loras, conditions: task.conditions.count)
         engine.submit(job) { event in
@@ -591,6 +607,13 @@ final class AppModel {
     func reuse(_ item: Artwork, sameSeed: Bool = true) {
         if let meta = item.metadata {
             let r = meta.request
+            let matching = models.filter { $0.name == meta.model }
+            let recorded = meta.modelPath.map { URL(fileURLWithPath: $0) } ?? (matching.count == 1 ? matching.first?.url : nil)
+            if let recorded, FileManager.default.fileExists(atPath: recorded.path), !isRunning {
+                modelRoot = recorded
+            } else if recorded?.path != modelRoot?.path || modelRoot == nil {
+                actionError = "参数已恢复，但原模型无法切换（缺失、名称不唯一或任务运行中）。生成前请确认模型：\(meta.model)"
+            }
             var p = parameters
             if r.mode.usesInstruction { p.instruction = r.prompt } else { p.prompt = r.prompt }
             p.negativePrompt = r.negativePrompt ?? ""
@@ -613,15 +636,19 @@ final class AppModel {
             p.maskInvert = r.maskInvert
             p.keepUnmasked = r.keepUnmaskedPixels
             parameters = p
+            var missing: [String] = []
             let images = r.inputs.compactMap { record -> (InputImageRecord.Role, InputImage)? in
-                guard FileManager.default.fileExists(atPath: record.path) else { return nil }
-                return (record.role, InputImage(
-                    storedPath: record.path, sourcePath: record.source, sha256: record.sha256, width: record.width,
-                    height: record.height))
+                guard let image = try? InputStore.restore(record, nextTo: item.url) else {
+                    missing.append(URL(fileURLWithPath: record.path).lastPathComponent)
+                    return nil
+                }
+                return (record.role, image)
             }
+            if !missing.isEmpty { actionError = "以下输入缺失或内容已改变，未恢复：" + missing.joined(separator: "、") }
             conditions = images.filter { $0.0 == .condition }.map(\.1)
-            if let start = images.first(where: { $0.0 == .initial }) { initialImage = start.1 }
+            initialImage = images.first(where: { $0.0 == .initial })?.1
             mode = r.mode
+            mask.clear()
             if let maskImage = images.first(where: { $0.0 == .mask }),
                 let rgba = try? RGBAImage(contentsOf: maskImage.1.url)
             {
@@ -670,7 +697,7 @@ final class AppModel {
     enum Destination { case reference, initial, edit, inpaint }
 
     func send(_ item: Artwork, to destination: Destination) {
-        guard let image = try? InputStore.importFile(item.url) else { return }
+        guard let image = importImage(item.url) else { return }
         switch destination {
         case .reference:
             addConditions([image])

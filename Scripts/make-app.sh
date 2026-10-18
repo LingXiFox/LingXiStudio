@@ -5,7 +5,7 @@ set -euo pipefail
 root=${0:A:h:h}
 version=${VERSION:-0.2.0}
 cd "$root"
-swift build -c release --product LingXiStudio
+swift build -c release --jobs "${BUILD_JOBS:-2}" --product LingXiStudio
 bin=$(swift build -c release --show-bin-path)
 app=$root/dist/LingXiStudio.app
 # Updated in place: the executable and plist are overwritten, the Metal bundle is merged with ditto.

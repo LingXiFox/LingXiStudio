@@ -2,7 +2,7 @@ import MLX
 import XCTest
 @testable import QwenImageCore
 
-final class WeightCancellationTests: XCTestCase {
+final class WeightCancellationTests: MLXTestCase {
     private struct Weights: ParameterContainer {
         let parameters = [MLXArray([Float(1)]), MLXArray([Float(2)]), MLXArray([Float(3)])]
     }

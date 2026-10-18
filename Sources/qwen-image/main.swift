@@ -186,7 +186,7 @@ do {
             let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
             output = dir.appending(path: "\(stamp)-\(request.seed).png")
         }
-        try ImageWriter.write(image, model: model.root.lastPathComponent, to: output)
+        try ImageWriter.write(image, model: model.root.lastPathComponent, modelPath: model.root.path, to: output)
         for t in image.timings {
             print(String(format: "  %-20@ %7.1fs  footprint peak %@", t.stage.rawValue as NSString, t.seconds,
                 formatBytes(t.peakFootprintBytes)))

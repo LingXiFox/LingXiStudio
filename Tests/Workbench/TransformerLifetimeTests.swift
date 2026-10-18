@@ -5,6 +5,7 @@ import XCTest
 
 final class TransformerLifetimeTests: XCTestCase {
     func testCompiledWeightsAreReleasedAcrossPromptShapes() throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["LINGXI_TEST_DEVICE"] == "cpu", "Metal-only compiled graph lifetime regression; run locally on Apple Silicon")
         MLXRuntime.configure()
         let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

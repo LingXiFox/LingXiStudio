@@ -213,6 +213,7 @@ struct LoRAItem: Identifiable, Codable, Equatable {
     var fileBytes: Int64 = 0
     var rank = 0
     var targetCount = 0
+    var precision = "—"
     var coverage: [String] = []
     var problems: [String] = []
 
@@ -232,12 +233,19 @@ struct LoRAItem: Identifiable, Codable, Equatable {
         id = (try? c.decodeIfPresent(UUID.self, forKey: .id)) ?? UUID()
         scale = (try? c.decodeIfPresent(Float.self, forKey: .scale)) ?? 1
         enabled = (try? c.decodeIfPresent(Bool.self, forKey: .enabled)) ?? true
-        purpose = (try? c.decodeIfPresent(Purpose.self, forKey: .purpose)) ?? .other
+        purpose = (try? c.decodeIfPresent(Purpose.self, forKey: .purpose)) ?? LoRAItem(path: path).purpose
         triggerWords = (try? c.decodeIfPresent(String.self, forKey: .triggerWords)) ?? ""
         source = (try? c.decodeIfPresent(String.self, forKey: .source)) ?? "本地文件"
     }
 
+    var canToggle: Bool { enabled || isUsable }
+
     mutating func refresh() {
+        fileBytes = 0
+        rank = 0
+        targetCount = 0
+        precision = "—"
+        coverage = []
         guard FileManager.default.fileExists(atPath: path) else {
             problems = ["文件不存在（已移动或删除）"]
             return
@@ -247,6 +255,7 @@ struct LoRAItem: Identifiable, Codable, Equatable {
             fileBytes = info.fileBytes
             rank = info.rank
             targetCount = info.targetCount
+            precision = info.dtype
             coverage = info.coverage
             problems = info.problems
         } catch {
@@ -293,6 +302,7 @@ struct TaskRecord: Identifiable, Codable {
     var mode: CreationMode = .textToImage
     var modelName: String
     var modelPath: String
+    var outputPath: String?
     var parameters: GenerationParameters
     var loras: [LoRASpec]
     var conditions: [InputImage] = []
@@ -307,10 +317,11 @@ struct TaskRecord: Identifiable, Codable {
     var finishedAt: Date?
 
     init(mode: CreationMode, modelName: String, modelPath: String, parameters: GenerationParameters, loras: [LoRASpec],
-         conditions: [InputImage], initial: InputImage?, mask: InputImage?) {
+         conditions: [InputImage], initial: InputImage?, mask: InputImage?, outputPath: String? = nil) {
         self.mode = mode
         self.modelName = modelName
         self.modelPath = modelPath
+        self.outputPath = outputPath
         self.parameters = parameters
         self.loras = loras
         self.conditions = conditions
@@ -325,6 +336,7 @@ struct TaskRecord: Identifiable, Codable {
         mode = (try? c.decodeIfPresent(CreationMode.self, forKey: .mode)) ?? .textToImage
         modelName = try c.decode(String.self, forKey: .modelName)
         modelPath = try c.decode(String.self, forKey: .modelPath)
+        outputPath = try c.decodeIfPresent(String.self, forKey: .outputPath)
         parameters = try c.decode(GenerationParameters.self, forKey: .parameters)
         loras = try c.decode([LoRASpec].self, forKey: .loras)
         conditions = (try? c.decodeIfPresent([InputImage].self, forKey: .conditions)) ?? []
